@@ -16,6 +16,7 @@ authors = [
 
 # Essential dependencies for a Textual-based editor
 dependencies = [
+    "mutagen"
 ]
 
 [project.optional-dependencies]
