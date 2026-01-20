@@ -14,7 +14,7 @@ authors = [
     { name = "Aldan Lema Touza", email = "65aldan@gmail.com" }
 ]
 
-# Essential dependencies for a Textual-based editor
+
 dependencies = [
     "mutagen"
 ]
