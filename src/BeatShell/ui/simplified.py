@@ -7,18 +7,10 @@ class BeatShellSimpleUI():
         self.boxed = boxed
 
     def draw(self, term_size: tuple[int, int], metadata):
-
-        """
-        Title
-        Album
-        Artist
-        Date
-        󰒮    󰓛    󰐊    󰒭
-        """
-
         width, height = term_size
 
-        controls = f" {PREVIOUS}    {STOP}    {PLAY}    {NEXT} "
+        x_start = 1
+        y_start = 1
 
         lines = (
             metadata["title"],
@@ -28,46 +20,28 @@ class BeatShellSimpleUI():
             "",
             "",
             "",
-            controls
+            "",
+            f"{PREVIOUS}    {STOP}    {PLAY}    {NEXT} "
         )
 
         max_len = len(max(lines, key=len))
 
-
         buffer = "\x1b[2J"
 
+
         if self.centered:
-            buffer += "\x1b[1;1H"
-        else:
-            buffer += "\x1b[1;1H"
+            x_start = (width - max_len + (-1 if self.boxed else 4)) // 2
+            y_start = (height - len(lines)) // 2
 
-        buffer += "╭" + "─" * (max_len + 2) + "╮"
 
-        for idx, line in enumerate(lines):
-            buffer += f"\x1b[{idx+2};1H│ {line:^{max_len}} │"
-        
-        buffer += f"\x1b[{idx+3};1H╰" + "─" * (max_len + 2) + "╯"
+        if self.boxed:
+            buffer += f"\x1b[{y_start};{x_start}H╭" + "─" * (max_len + 2) + "╮"
+            lines = tuple([f"│ {line:^{max_len}} │" for line in lines])
 
-        """
-          Palante
-          Showtime
-        Cookin Soul
-         2024-09-26
-        """
-        """
-        if self.centered:
-            start_y = (height - len(lines)) // 2
-            
-            for i, text in enumerate(lines):
-                content_len = len(text)
-                start_x = (width - max_len) // 2
+        for count, line in enumerate(lines, 1):
+            buffer += f"\x1b[{y_start+count};{x_start}H{line:^{max_len}}"
 
-                pos = f"\x1b[{start_y + i};{start_x}H"
-                buffer += pos + text
-        
-        else: 
-            ...
-        """
-
+        if self.boxed:
+            buffer += f"\x1b[{y_start+count+1};{x_start}H╰" + "─" * (max_len + 2) + "╯"
 
         return buffer
