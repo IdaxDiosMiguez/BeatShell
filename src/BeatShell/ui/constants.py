@@ -1,15 +1,24 @@
-NERD_CODE_FONT = True
+FONT = "Nerd Code Font"
 
-if NERD_CODE_FONT: 
-    PLAY = ""
-    PAUSE = ""
-    STOP = ""
-    NEXT = ""
-    PREVIOUS = ""
+match FONT:
 
-else:
-    PLAY = "▶"
-    PAUSE = "⏸"
-    STOP = "⏹"
-    NEXT = "▹"
-    PREVIOUS = "◃"
+    case "Nerd Code Font":
+        PLAY = "󰐊"
+        PAUSE = "󰏤"
+        STOP = "󰓛"
+        NEXT = "󰒭"
+        PREVIOUS = "󰒮"
+
+    case "Nerd Code Font 2":
+        PLAY = ""
+        PAUSE = ""
+        STOP = ""
+        NEXT = ""
+        PREVIOUS = ""
+
+    case _:
+        PLAY = "▶"
+        PAUSE = "⏸"
+        STOP = "⏹"
+        NEXT = "▹"
+        PREVIOUS = "◃"

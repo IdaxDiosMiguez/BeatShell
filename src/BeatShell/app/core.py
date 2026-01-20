@@ -79,7 +79,8 @@ class Core:
 
     def _draw_ui(self):
         if self.terminal.needs_redraw and self.ui:
-            self.terminal.write(self.ui.draw())
+            ui = self.ui.draw(self.terminal.size, self.metadata)
+            self.terminal.write(ui)
             self.terminal.needs_redraw = False
 
     def _main_loop(self):
