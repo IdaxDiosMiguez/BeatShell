@@ -16,6 +16,14 @@ from pathlib import Path
 DIST = Path(__file__).resolve().parent.parent / "dist"
 
 
+# La consola de Windows usa cp1252 y no sabe imprimir → ✔ ✖.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+
 def executable() -> Path:
     if sys.platform == "darwin":
         return DIST / "BeatShell.app" / "Contents" / "MacOS" / "BeatShell"
