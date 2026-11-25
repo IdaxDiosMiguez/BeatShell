@@ -47,7 +47,7 @@ from BeatShell.sources import Collection, classify
 
 from . import __version__, icons, style, workers
 from .player import Player
-from .widgets import Cover, DownloadDelegate, DownloadModel, SeekSlider, Toast, TrackList, VolumeSlider
+from .widgets import Bar, Cover, DownloadDelegate, DownloadModel, PlayButton, Toast, TrackList
 
 SEARCH, QUEUE, COLLECTION, DOWNLOADS = range(4)
 KIND_ICON = {PLAYLIST: "list", ALBUM: "album", ARTIST: "artist"}
@@ -285,15 +285,16 @@ class MainWindow(QMainWindow):
 
     def _build_player_bar(self) -> QWidget:
         bar = QFrame(objectName="player")
-        bar.setFixedHeight(88)
+        bar.setFixedHeight(96)
         g = QGridLayout(bar)
-        g.setContentsMargins(16, 10, 20, 10)
+        g.setContentsMargins(16, 12, 20, 12)
         g.setHorizontalSpacing(12)
 
         # izquierda: portada + título
         left = QHBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(12)
-        self.cover = Cover(58, 8)
+        self.cover = Cover(64, 10)
         left.addWidget(self.cover)
         txt = QVBoxLayout()
         txt.setSpacing(2)
@@ -313,17 +314,15 @@ class MainWindow(QMainWindow):
 
         # centro: controles + progreso
         center = QVBoxLayout()
-        center.setSpacing(2)
+        center.setContentsMargins(0, 0, 0, 0)
+        center.setSpacing(0)
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setSpacing(12)
         row.addStretch(1)
         self.b_shuffle = self._tool("shuffle", "Aleatorio (Ctrl+S)", 18)
         self.b_shuffle.setCheckable(True)
         self.b_prev = self._tool("prev", "Anterior (Ctrl+←)", 22)
-        self.b_play = QToolButton(objectName="play")
-        self.b_play.setFixedSize(38, 38)
-        self.b_play.setIconSize(QSize(20, 20))
-        self.b_play.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.b_play = PlayButton(self.t, 40)
         self.b_play.setToolTip("Reproducir / pausa (Espacio)")
         self.b_next = self._tool("next", "Siguiente (Ctrl+→)", 22)
         self.b_repeat = self._tool("repeat", "Repetir (Ctrl+R)", 18)
@@ -339,7 +338,16 @@ class MainWindow(QMainWindow):
         self.t_pos.setFixedWidth(44)
         self.t_dur = QLabel("0:00", objectName="time")
         self.t_dur.setFixedWidth(44)
-        self.seek = SeekSlider()
+        for lab in (self.t_pos, self.t_dur):
+            f = lab.font()
+            try:  # cifras del mismo ancho: el tiempo no baila mientras avanza
+                f.setFeature(QFont.Tag("tnum"), 1)
+            except (AttributeError, TypeError):
+                pass
+            lab.setFont(f)
+        self.seek = Bar(self.t, gradient=True)
+        self.seek.hover_changed.connect(self._seek_hover)
+        self._seek_hover_frac: float | None = None
         prog.addWidget(self.t_pos)
         prog.addWidget(self.seek, 1)
         prog.addWidget(self.t_dur)
@@ -351,6 +359,7 @@ class MainWindow(QMainWindow):
 
         # derecha: EQ y volumen
         right = QHBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(6)
         right.addStretch(1)
         self.b_eq = self._tool("eq", "Ecualizador y modo DJ", 18)
@@ -371,8 +380,8 @@ class MainWindow(QMainWindow):
         self.dj_action.setCheckable(True)
         self.dj_action.triggered.connect(self.player.toggle_dj)
         self.b_vol = self._tool("volume", "Silenciar (M)", 18)
-        self.vol = VolumeSlider()
-        self.vol.setFixedWidth(110)
+        self.vol = Bar(self.t, live=True, gradient=False, wheel_step=0.05)
+        self.vol.setFixedWidth(112)
         right.addWidget(self.b_eq)
         right.addWidget(self.b_vol)
         right.addWidget(self.vol)
@@ -524,7 +533,9 @@ class MainWindow(QMainWindow):
         pl, t = self.player, self.t
         playing = pl.engine is not None and pl.engine.active and not pl.engine.paused
         loading = pl.loading is not None or (pl.engine is not None and pl.engine.active and pl.engine.buffering)
-        self.b_play.setIcon(icons.icon("pause" if playing or pl.loading else "play", t.bg))
+        self.b_play.set_icon_name("pause" if playing or pl.loading else "play")
+        self.b_play.set_loading(loading)
+        self.seek.set_loading(loading)
         self.b_play.setToolTip("Cargando…" if loading else "Reproducir / pausa (Espacio)")
         self.b_shuffle.setChecked(pl.queue.shuffle)
         self.b_shuffle.setIcon(icons.icon("shuffle", t.accent if pl.queue.shuffle else t.muted,
@@ -538,6 +549,7 @@ class MainWindow(QMainWindow):
                                   "one": "Repetir: esta canción"}[rep] + " (Ctrl+R)")
         vol = 0 if pl.muted else pl.volume
         self.vol.set_fraction(vol / 100)
+        self.vol.setToolTip(f"Volumen {vol} %  ·  rueda del ratón o Ctrl+↑↓")
         self.b_vol.setIcon(icons.icon("mute" if vol == 0 else "volume-low" if vol < 45 else "volume",
                                       t.muted, t.text, 18))
         for name, a in self.eq_actions.items():
@@ -553,12 +565,24 @@ class MainWindow(QMainWindow):
         if self.player.loading is not None:
             self.t_pos.setText("…")
             self.seek.set_fraction(0)
-        elif not self.seek.dragging:
-            self.t_pos.setText(fmt_time(pos))
-            self.seek.set_fraction(pos / dur if dur else 0)
+        elif self.seek.dragging:
+            self._time_preview(dur, self.seek.fraction)
         else:
-            self.t_pos.setText(fmt_time((dur or 0) * self.seek.value() / self.seek.SCALE))
+            self.seek.set_fraction(pos / dur if dur else 0)
+            if self._seek_hover_frac is not None and dur:
+                self._time_preview(dur, self._seek_hover_frac)
+            else:
+                self.t_pos.setStyleSheet("")
+                self.t_pos.setText(fmt_time(pos))
         self.t_dur.setText(fmt_time(dur) if dur else "--:--")
+
+    def _time_preview(self, dur, frac: float) -> None:  # noqa: ANN001
+        """Mientras apuntas o arrastras, el reloj enseña adónde saltarías (en el acento)."""
+        self.t_pos.setStyleSheet(f"color: {self.t.accent};")
+        self.t_pos.setText(fmt_time((dur or 0) * frac))
+
+    def _seek_hover(self, frac) -> None:  # noqa: ANN001
+        self._seek_hover_frac = frac
 
     def _seek_fraction(self, frac: float) -> None:
         eng = self.player.engine

@@ -7,12 +7,14 @@ from PySide6.QtCore import (
     QEasingCurve,
     QModelIndex,
     QPoint,
+    QPointF,
     QPropertyAnimation,
     QRect,
     QRectF,
     QSize,
     Qt,
     QTimer,
+    QVariantAnimation,
     Signal,
 )
 from PySide6.QtGui import (
@@ -20,19 +22,21 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QImage,
+    QLinearGradient,
     QPainter,
     QPainterPath,
+    QPen,
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QAbstractItemView,
     QGraphicsOpacityEffect,
     QLabel,
     QListView,
-    QSlider,
+    QSizePolicy,
     QStyle,
     QStyledItemDelegate,
-    QStyleOptionSlider,
     QStyleOptionViewItem,
     QWidget,
 )
@@ -40,7 +44,7 @@ from PySide6.QtWidgets import (
 from BeatShell import art
 from BeatShell.models import Track, fmt_time
 
-from . import workers
+from . import icons, workers
 from .style import Theme
 
 ROW_H = 50
@@ -337,82 +341,290 @@ class Cover(QLabel):
 
 
 # ====================================================================== progreso
-class SeekSlider(QSlider):
-    """Barra que salta adonde haces clic (no a pasos) y no pelea con el usuario al arrastrar."""
+class Bar(QWidget):
+    """Barra de progreso o de volumen dibujada a mano.
 
-    seek = Signal(float)  # fracción 0..1
+    Fina y tranquila en reposo; al pasar el ratón engorda, aparece el tirador y el
+    relleno se ilumina. Salta adonde haces clic, se arrastra sin pelear con el
+    reproductor y, mientras carga, una luz recorre la pista.
+    """
 
-    SCALE = 1000
+    seek = Signal(float)              # fracción elegida (al soltar; o en vivo si live=True)
+    hover_changed = Signal(object)    # fracción bajo el ratón, o None al salir
 
-    def __init__(self) -> None:
-        super().__init__(Qt.Orientation.Horizontal)
-        self.setRange(0, self.SCALE)
+    def __init__(self, theme: Theme, live: bool = False, gradient: bool = True,
+                 wheel_step: float = 0.0) -> None:
+        super().__init__()
+        self.t = theme
+        self.live = live
+        self.gradient = gradient
+        self.wheel_step = wheel_step
+        self.setFixedHeight(20)
+        self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(18)
-        self._dragging = False
-        self.sliderReleased.connect(self._released)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._frac = 0.0
+        self._drag = False
+        self._hover: float | None = None
+        self._grow = 0.0  # 0 = reposo, 1 = ratón encima
+        self._anim = QVariantAnimation(self, duration=140, easingCurve=QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._set_grow)
+        self._loading = False
+        self._phase = 0.0
+        self._shimmer = QTimer(self, interval=16)
+        self._shimmer.timeout.connect(self._tick_shimmer)
 
-    def _value_at(self, x: float) -> int:
-        opt = QStyleOptionSlider()
-        self.initStyleOption(opt)
-        groove = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt,
-                                             QStyle.SubControl.SC_SliderGroove, self)
-        frac = (x - groove.left()) / max(1, groove.width())
-        return int(max(0.0, min(1.0, frac)) * self.SCALE)
-
-    def mousePressEvent(self, e) -> None:  # noqa: ANN001, N802
-        if e.button() == Qt.MouseButton.LeftButton:
-            self._dragging = True
-            self.setValue(self._value_at(e.position().x()))
-            self.setSliderDown(True)
-            e.accept()
-            return
-        super().mousePressEvent(e)
-
-    def mouseMoveEvent(self, e) -> None:  # noqa: ANN001, N802
-        if self._dragging:
-            self.setValue(self._value_at(e.position().x()))
-            return
-        super().mouseMoveEvent(e)
-
-    def mouseReleaseEvent(self, e) -> None:  # noqa: ANN001, N802
-        if self._dragging:
-            self._dragging = False
-            self.setSliderDown(False)
-            self._released()
-            return
-        super().mouseReleaseEvent(e)
-
-    def _released(self) -> None:
-        self.seek.emit(self.value() / self.SCALE)
-
+    # ------------------------------------------------------------ API
     @property
     def dragging(self) -> bool:
-        return self._dragging or self.isSliderDown()
+        return self._drag
+
+    @property
+    def fraction(self) -> float:
+        return self._frac
 
     def set_fraction(self, frac: float) -> None:
-        if not self.dragging:
-            self.blockSignals(True)
-            self.setValue(int(max(0.0, min(1.0, frac)) * self.SCALE))
-            self.blockSignals(False)
+        frac = max(0.0, min(1.0, frac))
+        if not self._drag and abs(frac - self._frac) > 1e-4:
+            self._frac = frac
+            self.update()
+
+    def set_loading(self, on: bool) -> None:
+        if on == self._loading:
+            return
+        self._loading = on
+        if on:
+            self._phase = 0.0
+            self._shimmer.start()
+        else:
+            self._shimmer.stop()
+        self.update()
+
+    # ------------------------------------------------------------ animación
+    def _set_grow(self, v) -> None:  # noqa: ANN001
+        self._grow = float(v)
+        self.update()
+
+    def _animate_to(self, target: float) -> None:
+        self._anim.stop()
+        self._anim.setStartValue(self._grow)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def _tick_shimmer(self) -> None:
+        self._phase = (self._phase + 0.012) % 1.4
+        self.update()
+
+    # ------------------------------------------------------------ geometría
+    def _track(self) -> QRectF:
+        pad = 7.0
+        h = 4.0 + 2.0 * self._grow
+        return QRectF(pad, (self.height() - h) / 2, max(1.0, self.width() - 2 * pad), h)
+
+    def _frac_at(self, x: float) -> float:
+        tr = self._track()
+        return max(0.0, min(1.0, (x - tr.left()) / tr.width()))
+
+    # ------------------------------------------------------------ ratón
+    def enterEvent(self, e) -> None:  # noqa: ANN001, N802
+        self._animate_to(1.0)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e) -> None:  # noqa: ANN001, N802
+        self._hover = None
+        self.hover_changed.emit(None)
+        if not self._drag:
+            self._animate_to(0.0)
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e) -> None:  # noqa: ANN001, N802
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        self._drag = True
+        self._frac = self._frac_at(e.position().x())
+        if self.live:
+            self.seek.emit(self._frac)
+        self.update()
+
+    def mouseMoveEvent(self, e) -> None:  # noqa: ANN001, N802
+        f = self._frac_at(e.position().x())
+        self._hover = f
+        self.hover_changed.emit(f)
+        if self._drag:
+            self._frac = f
+            if self.live:
+                self.seek.emit(f)
+        self.update()
+
+    def mouseReleaseEvent(self, e) -> None:  # noqa: ANN001, N802
+        if not self._drag:
+            return
+        self._drag = False
+        self.seek.emit(self._frac)
+        if not self.underMouse():
+            self._animate_to(0.0)
+        self.update()
+
+    def wheelEvent(self, e) -> None:  # noqa: ANN001, N802
+        if not self.wheel_step:
+            return super().wheelEvent(e)
+        steps = e.angleDelta().y() / 120 or e.angleDelta().x() / 120
+        if steps:
+            self._frac = max(0.0, min(1.0, self._frac + steps * self.wheel_step))
+            self.seek.emit(self._frac)
+            self.update()
+        e.accept()
+
+    # ------------------------------------------------------------ dibujo
+    def paintEvent(self, _e) -> None:  # noqa: ANN001, N802
+        t = self.t
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        tr = self._track()
+        r = tr.height() / 2
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(t.selected))
+        p.drawRoundedRect(tr, r, r)
+
+        if self._loading:
+            # luz que recorre la pista
+            w = tr.width() * 0.28
+            x = tr.left() + (self._phase - 0.2) * tr.width()
+            g = QLinearGradient(x, 0, x + w, 0)
+            c = QColor(t.accent)
+            c0 = QColor(c)
+            c0.setAlpha(0)
+            g.setColorAt(0.0, c0)
+            g.setColorAt(0.5, c)
+            g.setColorAt(1.0, c0)
+            p.save()
+            clip = QPainterPath()
+            clip.addRoundedRect(tr, r, r)
+            p.setClipPath(clip)
+            p.setBrush(g)
+            p.drawRect(QRectF(x, tr.top(), w, tr.height()))
+            p.restore()
+            return
+
+        fill_w = tr.width() * self._frac
+        if fill_w > 0.5:
+            fill = QRectF(tr.left(), tr.top(), max(fill_w, tr.height()), tr.height())
+            if self.gradient:
+                g = QLinearGradient(tr.left(), 0, tr.right(), 0)
+                g.setColorAt(0.0, QColor(t.accent))
+                g.setColorAt(1.0, QColor(t.accent2))
+                brush = g
+            else:
+                c = QColor(t.text)
+                a = QColor(t.accent)
+                k = self._grow
+                brush = QColor(int(c.red() + (a.red() - c.red()) * k),
+                               int(c.green() + (a.green() - c.green()) * k),
+                               int(c.blue() + (a.blue() - c.blue()) * k))
+            p.setBrush(brush)
+            p.drawRoundedRect(fill, r, r)
+
+        # marca fantasma bajo el ratón (dónde saltarías)
+        if self._hover is not None and not self._drag and self.gradient:
+            hx = tr.left() + tr.width() * self._hover
+            ghost = QColor(t.text)
+            ghost.setAlpha(60)
+            p.setBrush(ghost)
+            p.drawRoundedRect(QRectF(hx - 1, tr.top() - 2, 2, tr.height() + 4), 1, 1)
+
+        # tirador
+        k = 1.0 if self._drag else self._grow
+        if k > 0.01:
+            kx = tr.left() + fill_w
+            cy = tr.center().y()
+            rad = 4.0 + 2.5 * k
+            shadow = QColor(0, 0, 0, int(70 * k))
+            p.setBrush(shadow)
+            p.drawEllipse(QPointF(kx, cy + 1), rad + 1.5, rad + 1.5)
+            knob = QColor("#ffffff")
+            knob.setAlphaF(k)
+            p.setBrush(knob)
+            p.drawEllipse(QPointF(kx, cy), rad, rad)
 
 
-class VolumeSlider(SeekSlider):
-    """Igual que la de progreso, pero avisa mientras arrastras."""
+class PlayButton(QAbstractButton):
+    """Botón redondo de reproducir/pausa con un leve crecimiento al pasar el ratón y un
+    anillo que gira mientras carga."""
 
-    def __init__(self) -> None:
+    def __init__(self, theme: Theme, size: int = 40) -> None:
         super().__init__()
-        self.setRange(0, 100)
-        self.valueChanged.connect(lambda v: self.seek.emit(v / 100) if self.dragging else None)
+        self.t = theme
+        self.setFixedSize(size + 8, size + 8)
+        self._d = size
+        self._icon = "play"
+        self._scale = 1.0
+        self._loading = False
+        self._angle = 0
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._anim = QVariantAnimation(self, duration=120, easingCurve=QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._set_scale)
+        self._spin = QTimer(self, interval=16)
+        self._spin.timeout.connect(self._tick)
+        self.pressed.connect(lambda: self._scale_to(0.92))
+        self.released.connect(lambda: self._scale_to(1.06 if self.underMouse() else 1.0))
 
-    def _value_at(self, x: float) -> int:
-        return int(super()._value_at(x) / self.SCALE * 100)
+    def set_icon_name(self, name: str) -> None:
+        if name != self._icon:
+            self._icon = name
+            self.update()
 
-    def set_fraction(self, frac: float) -> None:
-        if not self.dragging:
-            self.blockSignals(True)
-            self.setValue(int(round(frac * 100)))
-            self.blockSignals(False)
+    def set_loading(self, on: bool) -> None:
+        if on == self._loading:
+            return
+        self._loading = on
+        self._spin.start() if on else self._spin.stop()
+        self.update()
+
+    def _tick(self) -> None:
+        self._angle = (self._angle + 7) % 360
+        self.update()
+
+    def _set_scale(self, v) -> None:  # noqa: ANN001
+        self._scale = float(v)
+        self.update()
+
+    def _scale_to(self, target: float) -> None:
+        self._anim.stop()
+        self._anim.setStartValue(self._scale)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def enterEvent(self, e) -> None:  # noqa: ANN001, N802
+        self._scale_to(1.06)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e) -> None:  # noqa: ANN001, N802
+        self._scale_to(1.0)
+        super().leaveEvent(e)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self._d + 8, self._d + 8)
+
+    def paintEvent(self, _e) -> None:  # noqa: ANN001, N802
+        t = self.t
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = QPointF(self.width() / 2, self.height() / 2)
+        rad = self._d / 2 * self._scale
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(t.text))
+        p.drawEllipse(c, rad, rad)
+        isz = int(self._d * 0.5)
+        px = icons.pixmap(self._icon, t.bg, isz)
+        p.drawPixmap(QPointF(c.x() - isz / 2, c.y() - isz / 2), px)
+        if self._loading:
+            pen = QPen(QColor(t.accent), 2.2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            ring = rad + 3.5
+            p.drawArc(QRectF(c.x() - ring, c.y() - ring, 2 * ring, 2 * ring),
+                      -self._angle * 16, 100 * 16)
 
 
 # ====================================================================== aviso

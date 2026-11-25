@@ -20,6 +20,7 @@ class Theme:
     muted: str
     faint: str
     accent: str
+    accent2: str
     accent_text: str
     error: str
 
@@ -27,12 +28,12 @@ class Theme:
 DARK = Theme(
     dark=True, bg="#0e0e11", side="#0a0a0c", hover="#18181d", selected="#212128",
     border="#1c1c22", text="#f2f2f5", muted="#8d8d99", faint="#55555f",
-    accent="#ff4fd8", accent_text="#16060f", error="#ff5c7a",
+    accent="#ff4fd8", accent2="#5ee7ff", accent_text="#16060f", error="#ff5c7a",
 )
 LIGHT = Theme(
     dark=False, bg="#ffffff", side="#f6f6f8", hover="#f0f0f3", selected="#e9e9ef",
     border="#e7e7ec", text="#141418", muted="#6c6c78", faint="#a6a6b0",
-    accent="#d81fb6", accent_text="#ffffff", error="#d93355",
+    accent="#d81fb6", accent2="#0aa2c8", accent_text="#ffffff", error="#d93355",
 )
 
 
@@ -118,22 +119,12 @@ QScrollBar:horizontal {{ height: 0; }}
 /* ---------- reproductor ---------- */
 #player {{ background: {t.side}; border-top: 1px solid {t.border}; }}
 #nowTitle {{ font-size: 14px; font-weight: 700; }}
+#player QToolButton {{ border-radius: 16px; padding: 6px; }}
 #nowArtist {{ color: {t.muted}; }}
 #time {{ color: {t.faint}; font-size: 11px; }}
 QToolButton {{ border: none; background: transparent; border-radius: 8px; padding: 4px; }}
 QToolButton:hover {{ background: {t.hover}; }}
-QToolButton#play {{ background: {t.text}; border-radius: 19px; }}
-QToolButton#play:hover {{ background: {t.text}; }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
-
-QSlider {{ background: transparent; }}
-QSlider::groove:horizontal {{ height: 4px; background: {t.selected}; border: none; border-radius: 2px; }}
-QSlider::sub-page:horizontal {{ height: 4px; background: {t.text}; border: none; border-radius: 2px; }}
-QSlider::add-page:horizontal {{ height: 4px; background: {t.selected}; border: none; border-radius: 2px; }}
-QSlider::handle:horizontal {{ background: transparent; border: none; width: 12px; height: 12px;
-                              margin: -4px 0; border-radius: 6px; }}
-QSlider::sub-page:horizontal:hover {{ background: {t.accent}; }}
-QSlider::handle:horizontal:hover {{ background: {t.text}; }}
 
 /* ---------- menús y diálogos ---------- */
 QMenu {{ background: {t.selected}; border: 1px solid {t.border}; border-radius: 10px; padding: 5px; }}
