@@ -6,6 +6,7 @@ from PySide6.QtCore import (
     QAbstractListModel,
     QEasingCurve,
     QModelIndex,
+    QObject,
     QPoint,
     QPointF,
     QPropertyAnimation,
@@ -47,7 +48,7 @@ from BeatShell.models import Track, fmt_time
 from . import icons, workers
 from .style import Theme
 
-ROW_H = 50
+ROW_H = 56
 
 
 def scaled(font: QFont, factor: float) -> QFont:
@@ -103,6 +104,215 @@ class TrackModel(QAbstractListModel):
         return self.playing_key is not None and t.key == self.playing_key
 
 
+# ====================================================================== portadas en listas
+class CoverCache(QObject):
+    """Portadas recortadas a cuadrado, cargadas en segundo plano, para pintarlas en listas.
+
+    `image()` devuelve None mientras carga; al llegar se emite `ready` y las listas se repintan.
+    """
+
+    ready = Signal()
+    SMALL, BIG = 112, 480
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._img: dict[tuple[str, int], QImage | None] = {}
+        self._sprites: dict[str, QImage] = {}
+        self._pending: set[tuple[str, int]] = set()
+        self._emit = QTimer(self)
+        self._emit.setSingleShot(True)
+        self._emit.setInterval(60)  # muchas portadas a la vez → un único repintado
+        self._emit.timeout.connect(self.ready.emit)
+
+    def image(self, track: Track, big: bool = False) -> QImage | None:
+        size = self.BIG if big else self.SMALL
+        key = (f"{track.key}|{track.thumb}", size)
+        if key in self._img:
+            return self._img[key]
+        if key not in self._pending:
+            self._pending.add(key)
+            workers.run(art.cover_bytes, track, done=lambda d, k=key: self._got(k, d))
+        return None
+
+    def _got(self, key: tuple[str, int], data: bytes | None) -> None:
+        self._pending.discard(key)
+        img = QImage.fromData(data) if data else QImage()
+        if img.isNull():
+            self._img[key] = None
+        else:
+            side = min(img.width(), img.height())
+            img = img.copy((img.width() - side) // 2, (img.height() - side) // 2, side, side)
+            self._img[key] = img.scaled(key[1], key[1], Qt.AspectRatioMode.IgnoreAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation)
+        self._emit.start()
+
+    def sprite(self, seed: str) -> QImage:
+        if seed not in self._sprites:
+            self._sprites[seed] = sprite_image(seed)
+        return self._sprites[seed]
+
+
+_covers: CoverCache | None = None
+
+
+def covers() -> CoverCache:
+    global _covers
+    if _covers is None:
+        _covers = CoverCache()
+    return _covers
+
+
+def _thumb_track(url: str) -> Track:
+    """Una imagen suelta (portada de playlist) como si fuera una canción, para la caché."""
+    return Track(title="", url=url, thumb=url)
+
+
+def mosaic_sources(thumb: str | None, tracks: list[Track]) -> list[Track]:
+    """Como en Spotify: la portada propia, o un mosaico con las 4 primeras portadas distintas."""
+    if thumb:
+        return [_thumb_track(thumb)]
+    seen, out = set(), []
+    for t in tracks:
+        k = t.thumb or (t.album and f"{t.artist}|{t.album}") or None
+        if t.thumb or t.path:
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(t)
+        if len(out) == 4:
+            break
+    return out if len(out) >= 4 else out[:1]
+
+
+def paint_cover(p: QPainter, rect: QRectF, sources: list[Track], radius: float, seed: str,
+                big: bool = False, round_: bool = False) -> None:
+    """Pinta una portada (o un mosaico 2×2) recortada con esquinas redondeadas."""
+    cache = covers()
+    path = QPainterPath()
+    if round_:
+        path.addEllipse(rect)
+    else:
+        path.addRoundedRect(rect, radius, radius)
+    p.save()
+    p.setClipPath(path)
+
+    def draw(cell: QRectF, img: QImage | None, sprite_seed: str) -> None:
+        # las fotos se suavizan; el pixel-art de reserva, no
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, img is not None)
+        p.drawImage(cell, img if img is not None else cache.sprite(sprite_seed))
+
+    if len(sources) >= 4:
+        w, h = rect.width() / 2, rect.height() / 2
+        cells = [QRectF(rect.left() + (i % 2) * w, rect.top() + (i // 2) * h, w, h) for i in range(4)]
+        for cell, t in zip(cells, sources):
+            draw(cell, cache.image(t, big), f"{t.artist}|{t.album or t.title}")
+    else:
+        draw(rect, cache.image(sources[0], big) if sources else None, seed)
+    p.restore()
+
+
+ROLE_SUB = Qt.ItemDataRole.UserRole + 1   # «Playlist · autor»
+ROLE_ART = Qt.ItemDataRole.UserRole + 2   # (fuentes de portada, semilla, icono de mosaico, redonda)
+
+
+def paint_tile(p: QPainter, rect: QRectF, th: Theme, icon_name: str, radius: float,
+               gradient: bool) -> None:
+    """Cuadro con icono para lo que no tiene portada («Todas las canciones», carpetas)."""
+    p.save()
+    p.setPen(Qt.PenStyle.NoPen)
+    if gradient:
+        g = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        g.setColorAt(0, QColor(th.accent))
+        g.setColorAt(1, QColor(th.accent2))
+        p.setBrush(g)
+    else:
+        p.setBrush(QColor(th.selected))
+    p.drawRoundedRect(rect, radius, radius)
+    isz = int(rect.width() * 0.42)
+    px = icons.pixmap(icon_name, "#ffffff" if gradient else th.muted, isz)
+    p.drawPixmap(QRectF(rect.center().x() - isz / 2, rect.center().y() - isz / 2, isz, isz),
+                 px, QRectF(px.rect()))
+    p.restore()
+
+
+class CollectionDelegate(QStyledItemDelegate):
+    """Filas de «Tu biblioteca» como en Spotify: portada, nombre y tipo · autor."""
+
+    def __init__(self, theme: Theme, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.t = theme
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # noqa: N802
+        return QSize(180, 58)
+
+    def paint(self, p: QPainter, opt: QStyleOptionViewItem, index: QModelIndex) -> None:
+        th = self.t
+        r = QRectF(opt.rect).adjusted(0, 1, 0, -1)
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+        if selected or opt.state & QStyle.StateFlag.State_MouseOver:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(th.selected if selected else th.hover))
+            p.drawRoundedRect(r, 7, 7)
+        sources, seed, tile, round_ = index.data(ROLE_ART) or ([], "", "list", False)
+        cs = 44.0
+        cover = QRectF(r.left() + 6, r.top() + (r.height() - cs) / 2, cs, cs)
+        if tile:
+            paint_tile(p, cover, th, tile, 5, gradient=tile == "note")
+        else:
+            paint_cover(p, cover, sources, 5, seed, round_=round_)
+        x = int(cover.right()) + 11
+        w = int(r.right()) - x - 6
+        base = QFont(opt.font)
+        name = QFont(base)
+        name.setWeight(QFont.Weight.Medium)
+        small = scaled(base, 0.88)
+        fm_n, fm_s = QFontMetrics(name), QFontMetrics(small)
+        mid = int(r.top() + r.height() / 2)
+        p.setFont(name)
+        p.setPen(QColor(th.text))
+        p.drawText(QRect(x, mid - fm_n.height() - 1, w, fm_n.height()),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
+                   fm_n.elidedText(index.data(Qt.ItemDataRole.DisplayRole) or "",
+                                   Qt.TextElideMode.ElideRight, w))
+        p.setFont(small)
+        p.setPen(QColor(th.muted))
+        p.drawText(QRect(x, mid + 2, w, fm_s.height()),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                   fm_s.elidedText(index.data(ROLE_SUB) or "", Qt.TextElideMode.ElideRight, w))
+        p.restore()
+
+
+class HeroCover(QWidget):
+    """Portada grande de la cabecera de una playlist (con mosaico si no tiene propia)."""
+
+    def __init__(self, theme: Theme, size: int = 192) -> None:
+        super().__init__()
+        self.t = theme
+        self.setFixedSize(size, size)
+        self._sources: list[Track] = []
+        self._seed = ""
+        self._tile: str | None = None
+        self._round = False
+        covers().ready.connect(self.update)
+
+    def set_art(self, sources: list[Track], seed: str, tile: str | None = None,
+                round_: bool = False) -> None:
+        self._sources, self._seed, self._tile, self._round = sources, seed, tile, round_
+        self.update()
+
+    def paintEvent(self, _e) -> None:  # noqa: ANN001, N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        if self._tile:
+            paint_tile(p, rect, self.t, self._tile, 8, gradient=self._tile == "note")
+        else:
+            paint_cover(p, rect, self._sources, 8, self._seed, big=True, round_=self._round)
+        p.end()
+
+
 class TrackDelegate(QStyledItemDelegate):
     def __init__(self, theme: Theme, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -149,7 +359,11 @@ class TrackDelegate(QStyledItemDelegate):
                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, fmt_time(t.duration))
         right -= dur_w + 16
 
-        x = lead.right() + 6
+        # portada de la canción, como en Spotify
+        cs = 40
+        cover = QRectF(lead.right() + 6, r.top() + (r.height() - cs) / 2, cs, cs)
+        paint_cover(p, cover, [t], 4, f"{t.artist}|{t.album or t.title}")
+        x = int(cover.right()) + 12
         avail = right - x
         album_w = int(avail * 0.34) if avail > 520 and t.album else 0
         text_w = avail - album_w - (16 if album_w else 0)
@@ -213,6 +427,7 @@ class TrackList(QListView):
         self._anim.setInterval(260)
         self._anim.timeout.connect(self._animate)
         self.animate_playing = False
+        covers().ready.connect(self.viewport().update)
 
     # ---------------------------------------------------------------- datos
     @property
