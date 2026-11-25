@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "BeatShell-Desktop"
+version = "0.1.0"
+description = "BeatShell con ventana: reproductor de música limpio y rápido para macOS, Windows y Linux."
+requires-python = ">=3.10"
+license = { text = "GPL-2.0-only" }
+authors = [
+    { name = "Ismael Dios Miguez", email = "idaxdm@gmail.com" },
+    { name = "Aldan Lema Touza", email = "aldanlematouza@gmail.com" }
+]
+dependencies = [
+    "BeatShell",                 # el núcleo (audio, YouTube, Spotify, biblioteca): ../
+    "PySide6-Essentials>=6.7",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.10"]
+
+[project.gui-scripts]
+beatshell-desktop = "beatshell_desktop.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["beatshell_desktop*"]
+
+[tool.setuptools.package-data]
+beatshell_desktop = ["assets/*"]

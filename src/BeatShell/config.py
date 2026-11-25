@@ -80,6 +80,7 @@ class Config:
     dj_crossfade: float = 8.0  # segundos de fundido entre canciones en modo DJ
     # auto: imagen real en Kitty/Ghostty, bloques en el resto · kitty: forzar · bloques: nunca
     cover_renderer: str = "auto"
+    visualizer: bool = True  # false en equipos modestos: ahorra CPU
     # Opcional: credenciales de la API de Spotify para playlists de más de 100 canciones.
     spotify_client_id: str = ""
     spotify_client_secret: str = ""

@@ -20,7 +20,8 @@ if (-not $exe) {
 
 & $exe @pre -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install --quiet --upgrade pip
-& .\.venv\Scripts\python.exe -m pip install --quiet .
+# Modo editable: el comando usa el código de esta carpeta, así un `git pull` basta para actualizar.
+& .\.venv\Scripts\python.exe -m pip install --quiet -e .
 Write-Host "OK Dependencias instaladas" -ForegroundColor Green
 
 # Lanzador en una carpeta que ya está en el PATH de Windows

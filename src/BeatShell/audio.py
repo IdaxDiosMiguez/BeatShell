@@ -160,6 +160,8 @@ class AudioEngine:
         self._main: _Voice | None = None
         self._out: _Voice | None = None  # la que se despide durante un fundido
         self._pending: _Voice | None = None  # versión de alta calidad esperando su turno
+        self._next: _Voice | None = None  # siguiente canción, pre-decodificada (sin hueco)
+        self._advanced = False
         self.upgrade_state: str | None = None  # pending | done | failed
         self._paused = False
         self._finished = False
@@ -172,6 +174,7 @@ class AudioEngine:
         self._mix = np.zeros((4096, CHANNELS), dtype=np.float32)
         self._tmp = np.zeros((4096, CHANNELS), dtype=np.float32)
         self._stream = None
+        self.underruns = 0  # veces que la tarjeta se quedó sin datos (cortes audibles)
         self._open_stream()
 
     # ------------------------------------------------------------ dispositivo
@@ -221,6 +224,9 @@ class AudioEngine:
     def volume(self) -> int:
         return self._volume
 
+    def set_volume(self, value: int) -> None:
+        self.volume = value
+
     @volume.setter
     def volume(self, value: int) -> None:
         self._volume = max(0, min(100, int(value)))
@@ -250,6 +256,8 @@ class AudioEngine:
             self._drop(self._out)
             self._out = None
             self._cancel_upgrade(None)
+            self._drop(self._next)
+            self._next = None
             self._drop(self._main)
             self._main = _Voice(source)
             self._paused = False
@@ -267,6 +275,8 @@ class AudioEngine:
         with self._cond:
             self._drop(self._out)
             self._cancel_upgrade(None)
+            self._drop(self._next)
+            self._next = None
             old = self._main
             old.set_fade(old.g1 if old.fade_done else 1.0, 0.0, frames)
             self._out = old
@@ -291,6 +301,26 @@ class AudioEngine:
             self.upgrade_state = "pending"
         self._restart(v, target, fade=0.03)
         return True
+
+    def set_next(self, source: Source) -> None:
+        """Pre-decodifica la siguiente canción para empalmarla sin silencio."""
+        with self._cond:
+            self._drop(self._next)
+            v = _Voice(source)
+            self._next = v
+        self._restart(v, 0.0, fade=0.0)
+
+    def clear_next(self) -> None:
+        with self._cond:
+            self._drop(self._next)
+            self._next = None
+
+    def poll_advanced(self) -> bool:
+        """True una vez cuando se empalmó la siguiente canción."""
+        if self._advanced:
+            self._advanced = False
+            return True
+        return False
 
     def _cancel_upgrade(self, state: str | None) -> None:
         if self._pending is not None:
@@ -330,7 +360,8 @@ class AudioEngine:
             self._drop(self._out)
             self._drop(self._main)
             self._cancel_upgrade(None)
-            self._out = self._main = None
+            self._drop(self._next)
+            self._out = self._main = self._next = None
             self._cond.notify_all()
         self._viz = np.zeros(VIZ_SIZE, dtype=np.float32)
 
@@ -534,16 +565,28 @@ class AudioEngine:
                 self._out = None
         if main is not None and main_ready:
             if main.exhausted:
+                self._cancel_upgrade("failed")
+                nxt = self._next
+                if main.error is None and nxt is not None and nxt.ready and nxt.error is None:
+                    # Empalme sin hueco: la siguiente ya está decodificada.
+                    self._main, self._next = nxt, None
+                    self._advanced = True
+                    self._drop(main)
+                    rest = len(mix) - produced
+                    if rest > 0:
+                        produced += self._render(mix[produced:], tmp[produced:])
+                    return produced
                 # Terminó (o falló): lo avisamos una vez y liberamos la voz.
                 self._last_error = main.error
                 self._main = None
                 self._finished = True
-                self._cancel_upgrade("failed")
             elif main.buffered <= 0 and not main.decoder_done:
                 main.ready = False  # nos quedamos sin datos (red lenta): pre-cargar
         return produced
 
     def _callback(self, outdata, frames, time_info, status) -> None:  # noqa: ANN001
+        if status.output_underflow:
+            self.underruns += 1
         if self._paused or (self._main is None and self._out is None):
             outdata.fill(0)
             return

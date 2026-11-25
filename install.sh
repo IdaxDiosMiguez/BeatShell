@@ -20,7 +20,8 @@ echo "▶ Usando $($PY --version)"
 
 "$PY" -m venv .venv
 .venv/bin/python -m pip install --quiet --upgrade pip
-.venv/bin/python -m pip install --quiet .
+# Modo editable: el comando usa el código de esta carpeta, así un `git pull` basta para actualizar.
+.venv/bin/python -m pip install --quiet -e .
 echo "✔ Dependencias instaladas"
 
 mkdir -p "$HOME/.local/bin"
