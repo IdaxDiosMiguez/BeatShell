@@ -167,14 +167,48 @@ def _expiry(url: str) -> float:
         return time.time() + 3 * 3600
 
 
-def stream_info(url: str) -> tuple[Source, dict[str, Any]]:
-    """Resuelve la URL directa de audio (con caché hasta que caduca)."""
-    vid = youtube_id(url) or url
+# Clientes de YouTube que sirven el audio al momento (sin la espera del anuncio).
+# Solo ofrecen formatos mezclados (AAC ~96-128 kbps): se usan para arrancar ya y
+# luego el motor cambia, sin cortes, al stream de alta calidad (Opus).
+_FAST_CLIENTS = ["tv_simply", "web_embedded"]
+_FAST_FORMAT = "bestaudio/18/best[height<=480]/best"
+
+
+def _cache_key(url: str, fast: bool) -> str:
+    return f"{youtube_id(url) or url}|{'fast' if fast else 'hq'}"
+
+
+def cached_stream(url: str, fast: bool = False) -> Source | None:
+    """El stream ya resuelto (si sigue vigente), sin hacer peticiones."""
     with _CACHE_LOCK:
-        hit = _STREAM_CACHE.get(vid)
+        hit = _STREAM_CACHE.get(_cache_key(url, fast))
+    return hit[0] if hit and hit[1] > time.time() else None
+
+
+def stream_info(url: str, fast: bool = False) -> tuple[Source, dict[str, Any]]:
+    """Resuelve la URL directa de audio (con caché hasta que caduca).
+
+    fast=True usa clientes sin espera de anuncio (arranque inmediato, algo menos de calidad).
+    """
+    key = _cache_key(url, fast)
+    with _CACHE_LOCK:
+        hit = _STREAM_CACHE.get(key)
         if hit and hit[1] > time.time():
             return hit[0], hit[2]
-    info = _extract(url, format=_FORMAT, noplaylist=True)
+    if fast:
+        # Un cliente cada vez: pedirlos juntos hace que yt-dlp consulte ambos (el doble de lento).
+        info, last = None, None
+        for client in _FAST_CLIENTS:
+            try:
+                info = _extract(url, format=_FAST_FORMAT, noplaylist=True,
+                                extractor_args={"youtube": {"player_client": [client]}})
+                break
+            except YouTubeError as exc:
+                last = exc
+        if info is None:
+            raise last or YouTubeError("No hay stream rápido")
+    else:
+        info = _extract(url, format=_FORMAT, noplaylist=True)
     stream_url = info.get("url")
     if not stream_url and info.get("requested_formats"):
         stream_url = info["requested_formats"][0].get("url")
@@ -186,7 +220,10 @@ def stream_info(url: str) -> tuple[Source, dict[str, Any]]:
         duration=float(info["duration"]) if info.get("duration") else None,
         available_at=float(max([info.get("available_at") or 0] + [
             f.get("available_at") or 0 for f in info.get("requested_formats") or []])),
+        fast=fast,
     )
+    if fast and src.available_at > time.time() + 0.5:
+        raise YouTubeError("El stream rápido también exige esperar")
     meta = {
         "title": info.get("title"),
         "channel": info.get("channel") or info.get("uploader"),
@@ -196,7 +233,7 @@ def stream_info(url: str) -> tuple[Source, dict[str, Any]]:
         "is_live": info.get("is_live"),
     }
     with _CACHE_LOCK:
-        _STREAM_CACHE[vid] = (src, _expiry(stream_url), meta)
+        _STREAM_CACHE[key] = (src, _expiry(stream_url), meta)
     return src, meta
 
 
