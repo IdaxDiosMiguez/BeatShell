@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "BeatShell"
+version = "0.0.1"
+description = ""
+readme = "README.md"
+requires-python = ">=3.10"
+
+authors = [
+    { name = "Ismael Dios Miguez", email = "idaxdm@gmail.com" },
+    { name = "Aldan Lema Touza", email = "aldanlematouza@gmail.com" }
+]
+
+classifiers = [
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+]
+
+
+[project.urls]
+Homepage = "https://github.com/IdaxDiosMiguez/BeatShell"
+
+[project.scripts]
+beatshell = "BeatShell.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
