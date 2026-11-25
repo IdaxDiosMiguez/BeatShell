@@ -148,6 +148,7 @@ HELP_SECTIONS = [
     ]),
     ("General", [
         ("1-5", "Cola · Buscar · Biblioteca · Playlists · Descargas"),
+        ("Ctrl+B", "Mostrar / ocultar el menú lateral"),
         ("t", "Cambiar tema de color"),
         ("Ctrl+P", "Paleta de comandos"),
         ("?", "Esta ayuda"),
