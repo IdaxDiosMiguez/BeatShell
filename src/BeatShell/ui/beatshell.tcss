@@ -1,20 +1,23 @@
+/* BeatShell — estilos
+   Principios: pocas líneas, mucho aire, un solo color de acento por estado. */
+
 Screen {
     background: $background;
-    layers: base overlay;
 }
 
 /* ---------------------------------------------------------- cabecera */
 #top {
     height: 3;
+    padding: 0 2;
     background: $background;
 }
 #top Logo {
-    margin: 0 1 0 1;
+    margin-right: 3;
 }
 #omnibar {
     width: 1fr;
     height: 3;
-    border: tall $primary 40%;
+    border: tall $panel;
     background: $surface;
     padding: 0 1;
 }
@@ -25,20 +28,21 @@ Screen {
 /* ---------------------------------------------------------- cuerpo */
 #body {
     height: 1fr;
+    margin-top: 1;
 }
 #sidebar {
-    width: 24;
+    width: 22;
     background: $surface;
-    border-right: tall $primary 20%;
+    padding: 1 0;
 }
 #nav {
     height: auto;
     background: $surface;
     border: none;
-    padding: 1 0 0 0;
+    padding: 0;
 }
 #nav > .option-list--option {
-    padding: 0 1;
+    padding: 0 2;
 }
 #nav:focus {
     border: none;
@@ -46,18 +50,18 @@ Screen {
 #sidebar-stats {
     dock: bottom;
     height: auto;
-    padding: 1 1;
+    padding: 0 2;
     color: $text-muted;
 }
 #views {
     width: 1fr;
-    padding: 0 1;
+    padding: 0 2;
 }
 .view-header {
     height: auto;
-    min-height: 1;
-    padding: 1 1 0 1;
+    padding: 0 1;
     text-style: bold;
+    color: $foreground;
 }
 .view-hint {
     height: auto;
@@ -68,59 +72,62 @@ Screen {
     height: 1fr;
 }
 .side-list {
-    width: 30;
+    width: 34;
     height: 1fr;
-    border: round $primary 30%;
-    background: $background;
-    margin-right: 1;
+    background: $surface;
+    border: none;
+    padding: 1 1;
+    margin-right: 2;
+    overflow-x: hidden;
+    scrollbar-size-vertical: 1;
 }
 .side-list:focus {
-    border: round $primary;
+    background-tint: $primary 4%;
 }
-.side-list-title {
-    padding: 0 1;
-    color: $text-muted;
+#lib-tree > .tree--cursor {
+    background: $primary 30%;
+    text-style: bold;
+}
+#lib-tree:focus > .tree--cursor {
+    background: $primary 55%;
+}
+#lib-tree > .tree--guides {
+    color: $panel;
 }
 #library-filter {
-    border: round $secondary 30%;
     height: 3;
-    background: $background;
+    border: tall $panel;
+    background: $surface;
+    margin-bottom: 1;
 }
 #library-filter:focus {
-    border: round $secondary;
+    border: tall $secondary;
 }
 
 TrackTable, #downloads-table {
     height: 1fr;
     background: $background;
-    border: round $primary 30%;
+    border: none;
     scrollbar-size-vertical: 1;
-}
-TrackTable:focus, #downloads-table:focus {
-    border: round $primary;
 }
 TrackTable > .datatable--header, #downloads-table > .datatable--header {
     background: $background;
-    color: $secondary;
+    color: $text-muted;
     text-style: bold;
 }
 TrackTable > .datatable--cursor, #downloads-table > .datatable--cursor {
-    background: $primary 35%;
+    background: $primary 25%;
     color: $foreground;
-    text-style: bold;
 }
 TrackTable:focus > .datatable--cursor, #downloads-table:focus > .datatable--cursor {
-    background: $primary 60%;
+    background: $primary 55%;
+    text-style: bold;
 }
 TrackTable > .datatable--even-row, #downloads-table > .datatable--even-row {
-    background: $surface 40%;
+    background: $surface 45%;
 }
-
-.empty {
-    height: 1fr;
-    content-align: center middle;
-    color: $text-muted;
-    text-align: center;
+TrackTable > .datatable--hover, #downloads-table > .datatable--hover {
+    background: $primary 12%;
 }
 
 LoadingIndicator {
@@ -130,31 +137,41 @@ LoadingIndicator {
 
 /* ---------------------------------------------------------- reproductor */
 #player {
-    height: 13;
-    border-top: tall $primary 40%;
+    height: 12;
     background: $surface;
-    padding: 0 1;
+    padding: 1 2;
+    margin-top: 1;
 }
 #player CoverArt {
-    width: 26;
-    height: 12;
-    margin-right: 2;
+    width: 22;
+    height: 10;
+    margin-right: 3;
 }
 #player-main {
     width: 1fr;
 }
+#now {
+    height: 2;
+}
+#now-text {
+    width: 1fr;
+}
 #now-title {
     height: 1;
+    width: 100%;
     text-style: bold;
     color: $foreground;
 }
 #now-sub {
     height: 1;
+    width: 100%;
     color: $secondary;
 }
-#now-status {
+#now-badges {
+    width: auto;
     height: 1;
-    color: $text-muted;
+    link-style: none;
+    link-background-hover: $primary 25%;
 }
 #player Visualizer {
     height: 1fr;
@@ -163,30 +180,44 @@ LoadingIndicator {
 #player SeekBar {
     margin-top: 1;
 }
-#controls {
+#controls-row {
     height: 1;
-    margin-top: 1;
+}
+#controls {
+    width: auto;
+    height: 1;
     link-style: none;
-    link-background-hover: $primary 30%;
-    link-style-hover: bold;
+    link-background-hover: $primary 25%;
+}
+#now-status {
+    width: 1fr;
+    height: 1;
+    color: $text-muted;
+    text-align: right;
 }
 
-/* Terminal bajita: reproductor compacto sin portada grande */
+/* Terminal bajita: reproductor compacto */
 Screen.-compact #player {
     height: 7;
+    padding: 0 2;
 }
 Screen.-compact #player CoverArt {
     width: 12;
     height: 6;
+    margin-right: 2;
 }
 Screen.-compact #player Visualizer {
-    display: none;
+    height: 1;
+    margin: 0;
 }
-Screen.-compact #player SeekBar, Screen.-compact #controls {
+Screen.-compact #player SeekBar {
     margin-top: 0;
 }
 Screen.-compact #top Logo {
     display: none;
+}
+Screen.-compact #body, Screen.-compact #player {
+    margin-top: 0;
 }
 Screen.-narrow #sidebar {
     display: none;
@@ -198,16 +229,33 @@ ModalScreen {
     background: $background 70%;
 }
 .dialog {
-    width: 64;
+    width: 66;
     height: auto;
     max-height: 90%;
-    border: thick $primary;
+    border: tall $primary;
     background: $surface;
-    padding: 1 2;
+    padding: 1 3;
 }
 .dialog.help {
-    width: 84;
+    width: 86;
     height: 90%;
+}
+.dialog.eq {
+    width: 84;
+}
+.eq-body {
+    height: auto;
+}
+#eq-presets {
+    width: 22;
+    height: 15;
+    border: none;
+    background: $background;
+    margin-right: 3;
+}
+.eq-side {
+    width: 1fr;
+    height: auto;
 }
 .dialog-title {
     text-style: bold;
@@ -229,15 +277,17 @@ ModalScreen {
     margin-left: 1;
 }
 .dialog Input {
-    border: round $secondary 50%;
+    border: tall $panel;
+    background: $background;
 }
 .dialog Input:focus {
-    border: round $secondary;
+    border: tall $secondary;
 }
 #picker {
     height: auto;
     max-height: 18;
-    border: round $primary 30%;
+    border: none;
+    background: $background;
 }
 .help-title {
     color: $secondary;

@@ -29,9 +29,32 @@ def main() -> None:
     parser.add_argument("--version", action="version", version=f"BeatShell {__version__}")
     args = parser.parse_args()
 
+    from .config import Config
+    from .ui.widgets import Graphics
+
+    Graphics.kitty = detect_kitty(Config.load().cover_renderer)
+
     from .ui.app import BeatShellApp
 
     BeatShellApp(initial=" ".join(args.query).strip() or None).run()
+
+
+def detect_kitty(pref: str) -> bool:
+    """¿Podemos dibujar portadas como imagen real (protocolo gráfico de Kitty)?
+
+    Hay que preguntarlo a la terminal antes de que Textual tome el control.
+    Kitty y Ghostty lo soportan; en el resto se usan bloques de colores.
+    """
+    if pref == "bloques" or not sys.stdout.isatty():
+        return False
+    try:
+        import textual_image.renderable as renderable
+        from textual_image.renderable.tgp import Image as TGPImage
+        from textual_image.widget import TGPImage as _widget  # guarda el tamaño de celda en caché
+    except Exception:
+        return False
+    del _widget
+    return pref == "kitty" or renderable.Image is TGPImage
 
 
 if __name__ == "__main__":
