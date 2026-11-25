@@ -1,14 +1,15 @@
-"""Colores y hoja de estilo. Un único acento (el rosa de BeatShell) sobre neutros."""
+"""Colores y hoja de estilo. Cada tema: neutros + un acento (y un segundo para degradados)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QGuiApplication, QPalette
 
 
-@dataclass(frozen=True)
+@dataclass
 class Theme:
     dark: bool
     bg: str
@@ -37,16 +38,56 @@ LIGHT = Theme(
 )
 
 
-def current(pref: str = "auto") -> Theme:
-    if pref == "light":
-        return LIGHT
-    if pref == "dark":
-        return DARK
+def _mix(a: str, b: str, t: float) -> str:
+    ca, cb = QColor(a), QColor(b)
+    return "#{:02x}{:02x}{:02x}".format(*(round(x + (y - x) * t) for x, y in (
+        (ca.red(), cb.red()), (ca.green(), cb.green()), (ca.blue(), cb.blue()))))
+
+
+def _retro(bg: str, side: str, hover: str, selected: str, text: str, accent: str, accent2: str,
+           error: str) -> Theme:
+    """Los temas de la versión de terminal, con los neutros derivados de sus colores."""
+    return Theme(dark=True, bg=bg, side=side, hover=hover, selected=selected,
+                 border=_mix(bg, text, 0.07), text=text, muted=_mix(text, bg, 0.42),
+                 faint=_mix(text, bg, 0.64), accent=accent, accent2=accent2,
+                 accent_text=_mix(bg, "#000000", 0.3), error=error)
+
+
+# Los mismos temas que BeatShell en la terminal (más claro/oscuro neutros).
+THEMES: dict[str, tuple[str, Theme | None]] = {
+    "auto": ("Automático", None),
+    "dark": ("Oscuro", DARK),
+    "light": ("Claro", LIGHT),
+    "beatshell": ("BeatShell", _retro("#0f0b1e", "#0b0817", "#171233", "#241b48",
+                                      "#ece6ff", "#ff4fd8", "#5ee7ff", "#ff5c7a")),
+    "gameboy": ("Game Boy", _retro("#0f1f0f", "#0b170b", "#163016", "#244a24",
+                                   "#c4dc8c", "#9bbc0f", "#e0f8d0", "#f87858")),
+    "sunset": ("Sunset", _retro("#1a0f12", "#140b0e", "#26151b", "#3a1e24",
+                                "#fff1e0", "#ff8a3d", "#ff4f6d", "#ff5c7a")),
+    "ice": ("Ice", _retro("#0a1020", "#070c18", "#111a30", "#1a2644",
+                          "#e6f1ff", "#5ab8ff", "#a78bfa", "#ff7a90")),
+}
+
+
+def system_is_light() -> bool:
     try:
-        scheme = QGuiApplication.styleHints().colorScheme()
-        return LIGHT if scheme == Qt.ColorScheme.Light else DARK
+        return QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Light
     except Exception:  # noqa: BLE001 - Qt antiguo
-        return DARK
+        return False
+
+
+def current(pref: str = "auto") -> Theme:
+    """Una copia del tema (la app la modifica en el sitio al cambiar de tema en vivo)."""
+    base = THEMES.get(pref, THEMES["auto"])[1]
+    if base is None:
+        base = LIGHT if system_is_light() else DARK
+    return replace(base)
+
+
+def assign(target: Theme, source: Theme) -> None:
+    """Copia los colores de `source` en `target`: todo lo que usa `target` cambia a la vez."""
+    for f in fields(Theme):
+        setattr(target, f.name, getattr(source, f.name))
 
 
 def palette(t: Theme) -> QPalette:
@@ -65,7 +106,27 @@ def palette(t: Theme) -> QPalette:
     return p
 
 
+def _arrow(color: str) -> str:
+    """Flecha de los desplegables como imagen (QSS no sabe dibujar triángulos)."""
+    from BeatShell.config import CACHE_DIR
+
+    from . import icons
+
+    base = CACHE_DIR / f"arrow-{color.lstrip('#')}"
+    try:
+        if not Path(f"{base}.png").exists():
+            for suffix, size in (("", 12), ("@2x", 24)):
+                px = icons.pixmap("chevron", color, size)
+                px.setDevicePixelRatio(1.0)
+                px.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                          Qt.TransformationMode.SmoothTransformation).save(f"{base}{suffix}.png")
+        return Path(f"{base}.png").as_posix()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def qss(t: Theme) -> str:
+    arrow = _arrow(t.muted)
     return f"""
 * {{ outline: none; }}
 QWidget {{ color: {t.text}; font-size: 13px; }}
@@ -135,6 +196,29 @@ QMenu::separator {{ height: 1px; background: {t.border}; margin: 4px 6px; }}
 QMenu::indicator {{ width: 0; }}
 QInputDialog, QMessageBox {{ background: {t.bg}; }}
 QDialog QLineEdit {{ background: {t.hover}; border: 1px solid {t.border}; border-radius: 8px; padding: 7px; }}
+
+/* ---------- ajustes ---------- */
+QScrollArea#settings, #settingsBody {{ background: {t.bg}; border: none; }}
+#setSection {{ font-size: 16px; font-weight: 800; padding-top: 18px; }}
+#setCard {{ background: {t.side}; border: 1px solid {t.border}; border-radius: 12px; }}
+#setLabel {{ font-weight: 600; }}
+#setHint {{ color: {t.muted}; font-size: 12px; }}
+#setRowSep {{ background: {t.border}; max-height: 1px; min-height: 1px; }}
+QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit#setField {{
+    background: {t.hover}; border: 1px solid {t.border}; border-radius: 8px; padding: 6px 10px;
+    min-height: 18px; selection-background-color: {t.accent}; selection-color: {t.accent_text}; }}
+QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit#setField:hover {{ border-color: {t.faint}; }}
+QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit#setField:focus {{ border-color: {t.accent}; }}
+QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox::down-arrow {{ image: url("{arrow}"); width: 12px; height: 12px; margin-right: 8px; }}
+QComboBox QAbstractItemView {{ background: {t.selected}; border: 1px solid {t.border}; border-radius: 8px;
+    padding: 4px; outline: none; selection-background-color: {t.hover if not t.dark else _mix(t.selected, t.text, 0.08)}; }}
+QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+    width: 0; border: none; }}
+QCheckBox {{ spacing: 10px; }}
+QCheckBox::indicator {{ width: 34px; height: 20px; border-radius: 10px; background: {t.selected};
+    border: 1px solid {t.border}; }}
+QCheckBox::indicator:checked {{ background: {t.accent}; border-color: {t.accent}; }}
 
 #toast {{ background: {t.text}; color: {t.bg}; border-radius: 10px; padding: 10px 16px;
           font-weight: 600; }}

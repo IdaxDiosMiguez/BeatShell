@@ -37,6 +37,7 @@ _STROKE = {
     "eq": '<path d="M5 20v-6"/><path d="M5 10V4"/><path d="M12 20v-8"/><path d="M12 8V4"/>'
           '<path d="M19 20v-4"/><path d="M19 12V4"/><path d="M2.5 14h5"/><path d="M9.5 8h5"/>'
           '<path d="M16.5 16h5"/>',
+    "chevron": '<path d="M6.5 9.5 12 15l5.5-5.5"/>',
     "plus": '<path d="M12 5v14"/><path d="M5 12h14"/>',
     "folder": '<path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
     "note": '<path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
@@ -47,6 +48,10 @@ _STROKE = {
     "close": '<path d="M6 6l12 12"/><path d="M18 6 6 18"/>',
     "check": '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
     "trash": '<path d="M4 7h16"/><path d="M9.5 7V4.5h5V7"/><path d="M6.5 7l1 13h9l1-13"/>',
+    "settings": '<circle cx="12" cy="12" r="3.2"/>'
+                '<path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.85 1.85M16.65 16.65l1.85 1.85'
+                'M5.5 18.5l1.85-1.85M16.65 7.35l1.85-1.85"/>',
+    "moon": '<path d="M20 14.6A8.2 8.2 0 1 1 9.4 4a6.6 6.6 0 0 0 10.6 10.6z"/>',
     "dj": '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="1.5"/><path d="M12 3.5v3"/>',
 }
 

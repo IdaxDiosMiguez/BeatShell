@@ -39,7 +39,7 @@ a = Analysis(
     excludes=[
         "tkinter", "textual", "textual_image", "BeatShell.ui", "matplotlib", "IPython",
         "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtWebEngineCore", "PySide6.QtMultimedia",
-        "PySide6.QtNetwork", "PySide6.QtOpenGL", "PySide6.QtPdf", "PySide6.Qt3DCore",
+        "PySide6.QtOpenGL", "PySide6.QtPdf", "PySide6.Qt3DCore",
     ],
     noarchive=False,
     optimize=1,

@@ -641,6 +641,8 @@ class Toast(QLabel):
         self._anim = QPropertyAnimation(self._fx, b"opacity", self)
         self._anim.setDuration(180)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.finished.connect(self._faded)
+        self._fading_out = False
         self._hide = QTimer(self)
         self._hide.setSingleShot(True)
         self._hide.timeout.connect(self._fade_out)
@@ -655,10 +657,7 @@ class Toast(QLabel):
         self.adjustSize()
         self._place()
         self._anim.stop()
-        try:
-            self._anim.finished.disconnect()
-        except (RuntimeError, TypeError):
-            pass
+        self._fading_out = False
         self._fx.setOpacity(0.0)
         self.show()
         self.raise_()
@@ -677,8 +676,13 @@ class Toast(QLabel):
         self._anim.stop()
         self._anim.setStartValue(self._fx.opacity())
         self._anim.setEndValue(0.0)
-        self._anim.finished.connect(self.hide)
+        self._fading_out = True
         self._anim.start()
+
+    def _faded(self) -> None:
+        if self._fading_out:
+            self._fading_out = False
+            self.hide()
 
 
 # ====================================================================== descargas
@@ -770,3 +774,133 @@ class DownloadDelegate(QStyledItemDelegate):
         p.setBrush(QColor(th.error if failed else (th.muted if done else th.accent)))
         p.drawRoundedRect(QRectF(bar.left(), bar.top(), bar.width() * frac, bar.height()), 1.5, 1.5)
         p.restore()
+
+
+# ====================================================================== ajustes
+class Switch(QAbstractButton):
+    """Interruptor sí/no con la bolita deslizándose."""
+
+    def __init__(self, theme: Theme) -> None:
+        super().__init__()
+        self.t = theme
+        self.setCheckable(True)
+        self.setFixedSize(40, 24)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pos = 0.0
+        self._anim = QVariantAnimation(self, duration=140, easingCurve=QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._moved)
+        self.toggled.connect(self._animate)
+
+    def _moved(self, v) -> None:  # noqa: ANN001
+        self._pos = float(v)
+        self.update()
+
+    def _animate(self, on: bool) -> None:
+        self._anim.stop()
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
+
+    def setChecked(self, on: bool) -> None:  # noqa: N802
+        super().setChecked(on)
+        self._anim.stop()
+        self._pos = 1.0 if on else 0.0
+        self.update()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(40, 24)
+
+    def paintEvent(self, _e) -> None:  # noqa: ANN001, N802
+        t = self.t
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        track = QRectF(1, 2, self.width() - 2, self.height() - 4)
+        off, on = QColor(t.selected), QColor(t.accent)
+        k = self._pos
+        col = QColor(int(off.red() + (on.red() - off.red()) * k),
+                     int(off.green() + (on.green() - off.green()) * k),
+                     int(off.blue() + (on.blue() - off.blue()) * k))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(col)
+        p.drawRoundedRect(track, track.height() / 2, track.height() / 2)
+        r = track.height() / 2 - 3
+        x = track.left() + 3 + r + (track.width() - 6 - 2 * r) * k
+        p.setBrush(QColor("#ffffff"))
+        p.drawEllipse(QPointF(x, track.center().y()), r, r)
+
+
+class ThemeCard(QAbstractButton):
+    """Miniatura de un tema: así se ve antes de elegirlo."""
+
+    def __init__(self, key: str, name: str, preview: Theme | None, current: Theme,
+                 light: Theme | None = None) -> None:
+        super().__init__()
+        self.key, self.name = key, name
+        self.preview, self.light = preview, light  # light: segunda mitad del «Automático»
+        self.t = current
+        self.setCheckable(True)
+        self.setFixedSize(128, 96)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(name)
+
+    def _mini(self, p: QPainter, rect: QRectF, th: Theme) -> None:
+        p.setBrush(QColor(th.bg))
+        p.drawRect(rect)
+        side = QRectF(rect.left(), rect.top(), rect.width() * 0.26, rect.height())
+        p.setBrush(QColor(th.side))
+        p.drawRect(side)
+        x = side.right() + 8
+        for i, (w, c) in enumerate(((0.42, th.text), (0.3, th.muted), (0.36, th.text), (0.24, th.muted))):
+            p.setBrush(QColor(c))
+            p.drawRoundedRect(QRectF(x, rect.top() + 9 + i * 8, (rect.right() - x - 6) * (w / 0.42), 3.5), 1.5, 1.5)
+        bar = QRectF(x, rect.bottom() - 12, rect.right() - x - 8, 4)
+        p.setBrush(QColor(th.selected))
+        p.drawRoundedRect(bar, 2, 2)
+        g = QLinearGradient(bar.left(), 0, bar.right(), 0)
+        g.setColorAt(0, QColor(th.accent))
+        g.setColorAt(1, QColor(th.accent2))
+        p.setBrush(g)
+        p.drawRoundedRect(QRectF(bar.left(), bar.top(), bar.width() * 0.62, bar.height()), 2, 2)
+
+    def paintEvent(self, _e) -> None:  # noqa: ANN001, N802
+        t = self.t
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        card = QRectF(2, 2, self.width() - 4, 62)
+        clip = QPainterPath()
+        clip.addRoundedRect(card, 9, 9)
+        p.save()
+        p.setClipPath(clip)
+        p.setPen(Qt.PenStyle.NoPen)
+        if self.preview is not None:
+            self._mini(p, card, self.preview)
+        else:  # automático: mitad oscuro, mitad claro
+            from .style import DARK, LIGHT
+
+            self._mini(p, card, DARK)
+            half = QPainterPath()
+            half.moveTo(card.right(), card.top())
+            half.lineTo(card.right(), card.bottom())
+            half.lineTo(card.left() + card.width() * 0.35, card.bottom())
+            half.lineTo(card.left() + card.width() * 0.65, card.top())
+            p.setClipPath(half, Qt.ClipOperation.IntersectClip)
+            self._mini(p, card, LIGHT)
+        p.restore()
+        sel = self.isChecked()
+        hover = self.underMouse()
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(t.accent if sel else (t.faint if hover else t.border)), 2 if sel else 1))
+        p.drawRoundedRect(card.adjusted(-1, -1, 1, 1), 10, 10)
+        f = scaled(p.font(), 0.95)
+        f.setWeight(QFont.Weight.DemiBold if sel else QFont.Weight.Normal)
+        p.setFont(f)
+        p.setPen(QColor(t.text if sel else t.muted))
+        p.drawText(QRectF(0, card.bottom() + 6, self.width(), 22), Qt.AlignmentFlag.AlignHCenter, self.name)
+
+    def enterEvent(self, e) -> None:  # noqa: ANN001, N802
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e) -> None:  # noqa: ANN001, N802
+        self.update()
+        super().leaveEvent(e)

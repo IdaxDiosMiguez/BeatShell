@@ -36,7 +36,7 @@ def _setup_env() -> None:
 def main() -> None:
     multiprocessing.freeze_support()  # el proceso de audio también arranca desde el ejecutable
     _setup_env()
-    from .app import run
+    from .shell import run
 
     sys.exit(run(sys.argv[1:]))
 

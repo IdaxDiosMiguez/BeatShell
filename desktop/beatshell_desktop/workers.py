@@ -21,7 +21,12 @@ class _Bridge(QObject):
 
     @staticmethod
     def _run(fn: Callable[[], None]) -> None:
-        fn()
+        try:
+            fn()
+        except RuntimeError as exc:
+            # La ventana pudo cerrarse (segundo plano) mientras el trabajo seguía en marcha.
+            if "already deleted" not in str(exc):
+                raise
 
 
 _bridge: _Bridge | None = None

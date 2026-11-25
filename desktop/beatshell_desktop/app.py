@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -45,11 +44,14 @@ from BeatShell.library import (
 from BeatShell.models import Track, fmt_time
 from BeatShell.sources import Collection, classify
 
-from . import __version__, icons, style, workers
-from .player import Player
+from . import icons, workers
+from .settings_page import SettingsPage
 from .widgets import Bar, Cover, DownloadDelegate, DownloadModel, PlayButton, Toast, TrackList
 
-SEARCH, QUEUE, COLLECTION, DOWNLOADS = range(4)
+if TYPE_CHECKING:
+    from .shell import Shell
+
+SEARCH, QUEUE, COLLECTION, DOWNLOADS, SETTINGS = range(5)
 KIND_ICON = {PLAYLIST: "list", ALBUM: "album", ARTIST: "artist"}
 
 
@@ -99,12 +101,14 @@ class Page(QWidget):
 
 # ====================================================================== ventana
 class MainWindow(QMainWindow):
-    def __init__(self, theme: style.Theme, initial: str | None = None) -> None:
+    def __init__(self, shell: "Shell") -> None:
         super().__init__()
-        self.t = theme
-        self.player = Player()
-        self._initial = initial
+        self.shell = shell
+        self.t = shell.theme
+        self.player = shell.player
         self._results: Collection | None = None
+        self._conns: list = []         # conexiones al reproductor (se sueltan al cerrar)
+        self._icons: list = []         # iconos a repintar al cambiar de tema
         self._search_seq = 0
         self._coll_sel: tuple[str, str | None] = ("all", None)
         self._coll_tracks: list[Track] = []
@@ -128,6 +132,8 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._build_queue_page())
         self.stack.addWidget(self._build_collection_page())
         self.stack.addWidget(self._build_downloads_page())
+        self.settings_page = SettingsPage(shell)
+        self.stack.addWidget(self.settings_page)
         v.addWidget(self.stack, 1)
         h.addWidget(right, 1)
 
@@ -146,8 +152,14 @@ class MainWindow(QMainWindow):
         self._refresh_queue()
         self._on_now(self.player.queue.current)
         self._on_state()
-        self.show_page(QUEUE if self.player.queue.tracks else SEARCH)
-        QTimer.singleShot(0, self._boot)
+        if self.player.downloader is not None:
+            self.d_model.reset(self.player.downloader.jobs)
+            self._update_downloads_label()
+        if shell.results is not None:
+            self._show_results(shell.results, False, self._search_seq)
+            self.show_page(QUEUE)
+        else:
+            self.show_page(QUEUE if self.player.queue.tracks else SEARCH)
 
     # ------------------------------------------------------------ construcción
     def _build_sidebar(self) -> QWidget:
@@ -170,7 +182,7 @@ class MainWindow(QMainWindow):
                                   DOWNLOADS: ("Descargas", "download")}.items():
             b = QPushButton(label, objectName="nav")
             b.setCheckable(True)
-            b.setIcon(icons.icon(ic, self.t.muted, self.t.text))
+            self._icon(b, ic, 20)
             b.setIconSize(QSize(18, 18))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _=False, p=page: self.show_page(p))
@@ -182,7 +194,7 @@ class MainWindow(QMainWindow):
         head.addWidget(QLabel("TU BIBLIOTECA", objectName="sectionTitle"))
         head.addStretch(1)
         add = QToolButton()
-        add.setIcon(icons.icon("plus", self.t.muted, self.t.text, 16))
+        self._icon(add, "plus", 16)
         add.setToolTip("Nueva playlist, añadir carpeta o importar")
         add.setCursor(Qt.CursorShape.PointingHandCursor)
         add.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -204,6 +216,15 @@ class MainWindow(QMainWindow):
         self.collections.itemClicked.connect(self._collection_clicked)
         self.collections.itemDoubleClicked.connect(lambda _i: self._play_collection())
         v.addWidget(self.collections, 1)
+
+        b = QPushButton("Ajustes", objectName="nav")
+        b.setCheckable(True)
+        self._icon(b, "settings", 20)
+        b.setIconSize(QSize(18, 18))
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.clicked.connect(lambda _=False: self.show_page(SETTINGS))
+        v.addWidget(b)
+        self.nav[SETTINGS] = b
         return side
 
     def _build_header(self) -> QWidget:
@@ -215,9 +236,11 @@ class MainWindow(QMainWindow):
         self.search.setClearButtonEnabled(True)
         self.search.setMaximumWidth(620)
         self.search.setMinimumHeight(40)
-        lead = QAction(icons.icon("search", self.t.faint, size=18), "", self.search)
+        lead = QAction("", self.search)
+        self._icon(lead, "search", 18, normal="faint", active="")
         self.search.addAction(lead, QLineEdit.ActionPosition.LeadingPosition)
         self.search.returnPressed.connect(self._submit_search)
+        self.search.textEdited.connect(lambda _t: self.player.warm_youtube())
         h.addWidget(self.search, 1)
         h.addStretch(0)
         return w
@@ -279,9 +302,17 @@ class MainWindow(QMainWindow):
         b = QToolButton()
         b.setToolTip(tip)
         b.setIconSize(QSize(size, size))
-        b.setIcon(icons.icon(name, self.t.muted, self.t.text, size))
+        self._icon(b, name, size)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         return b
+
+    def _icon(self, target, name: str, size: int = 20, normal: str = "muted", active: str = "text") -> None:  # noqa: ANN001
+        """Pone un icono y lo apunta para repintarlo con los colores del tema nuevo."""
+        def apply() -> None:
+            target.setIcon(icons.icon(name, getattr(self.t, normal), getattr(self.t, active) if active else None,
+                                      size))
+        apply()
+        self._icons.append(apply)
 
     def _build_player_bar(self) -> QWidget:
         bar = QFrame(objectName="player")
@@ -382,6 +413,10 @@ class MainWindow(QMainWindow):
         self.b_vol = self._tool("volume", "Silenciar (M)", 18)
         self.vol = Bar(self.t, live=True, gradient=False, wheel_step=0.05)
         self.vol.setFixedWidth(112)
+        self.b_bg = self._tool("moon", "Segundo plano: cierra la ventana y sigue sonando "
+                                       "gastando lo mínimo (Ctrl+B)", 18)
+        self.b_bg.clicked.connect(self.shell.go_background)
+        right.addWidget(self.b_bg)
         right.addWidget(self.b_eq)
         right.addWidget(self.b_vol)
         right.addWidget(self.vol)
@@ -397,14 +432,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ conexiones
     def _wire(self) -> None:
         pl = self.player
-        pl.now_changed.connect(self._on_now)
-        pl.state_changed.connect(self._on_state)
-        pl.queue_changed.connect(self._refresh_queue)
-        pl.position.connect(self._on_position)
-        pl.toast.connect(self.toast.show_message)
-        pl.job_changed.connect(self._on_job)
-        pl.library_changed.connect(self._on_library_changed)
-        pl.scanning.connect(self._on_scanning)
+        for sig, slot in ((pl.now_changed, self._on_now), (pl.state_changed, self._on_state),
+                          (pl.queue_changed, self._refresh_queue), (pl.position, self._on_position),
+                          (pl.toast, self.toast.show_message), (pl.job_changed, self._on_job),
+                          (pl.library_changed, self._on_library_changed), (pl.scanning, self._on_scanning)):
+            sig.connect(slot)
+            self._conns.append((sig, slot))
 
         self.b_play.clicked.connect(pl.toggle_pause)
         self.b_next.clicked.connect(pl.next)
@@ -467,6 +500,9 @@ class MainWindow(QMainWindow):
             "Ctrl+O": self._pick_folder,
             "Ctrl+N": self._new_playlist,
             "Ctrl+D": pl.toggle_dj,
+            "Ctrl+B": self.shell.go_background,
+            "Ctrl+,": lambda: self.show_page(SETTINGS),
+            "Ctrl+Q": self.shell.quit,
         }
         for seq, fn in binds.items():
             QShortcut(QKeySequence(seq), self, activated=fn)
@@ -477,14 +513,6 @@ class MainWindow(QMainWindow):
                         (Qt.Key.Key_MediaPrevious, pl.prev)):
             QShortcut(QKeySequence(key), self, activated=fn)
         QShortcut(QKeySequence("Escape"), self.search, activated=self._leave_search)
-
-    def _boot(self) -> None:
-        self.player.boot()
-        if self._initial:
-            text = self._initial
-            if classify(text)[0] == "search" and not os.path.exists(text):
-                text = "+" + text
-            self.submit(text)
 
     # ------------------------------------------------------------ navegación
     def show_page(self, page: int) -> None:
@@ -523,7 +551,7 @@ class MainWindow(QMainWindow):
 
     def _mark_playing(self) -> None:
         cur = self.player.queue.current
-        anim = self.player.playing
+        anim = self.player.playing and self.shell.settings.animations
         key = cur.key if cur else None
         self.s_list.set_playing(key, animate=anim)
         self.c_list.set_playing(key, animate=anim)
@@ -684,6 +712,7 @@ class MainWindow(QMainWindow):
         if seq != self._search_seq:
             return
         self._results = col
+        self.shell.results = col
         self.p_search.title.setText(col.name if col.kind != "search" else f"«{col.name}»")
         label = {"album": "Álbum", "playlist": "Playlist"}.get(col.kind, "Resultados de YouTube")
         owner = f" · {col.owner}" if col.owner else ""
@@ -1056,59 +1085,30 @@ class MainWindow(QMainWindow):
             self.toast._place()
 
     def closeEvent(self, e) -> None:  # noqa: ANN001, N802
-        self.player.shutdown()
-        workers.shutdown()
-        super().closeEvent(e)
+        if self.shell.close_requested():
+            e.accept()
+        else:
+            e.ignore()
 
+    def teardown(self) -> None:
+        """Suelta las conexiones con el reproductor antes de destruir la ventana."""
+        for sig, slot in self._conns:
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        self._conns.clear()
+        for lst in (self.s_list, self.q_list, self.c_list):
+            lst.set_playing(None)
 
-def app_icon() -> QIcon:
-    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-    for cand in (base / "assets" / "icon.png", Path(__file__).resolve().parent / "assets" / "icon.png"):
-        if cand.exists():
-            return QIcon(str(cand))
-    return QIcon()
-
-
-def run(argv: list[str]) -> int:
-    QApplication.setApplicationName("BeatShell")
-    QApplication.setApplicationDisplayName("BeatShell")
-    QApplication.setApplicationVersion(__version__)
-    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    app = QApplication(sys.argv[:1])
-    app.setStyle("Fusion")
-    app.setWindowIcon(app_icon())
-    workers.init()
-    theme = style.current(os.environ.get("BEATSHELL_THEME", "auto"))
-    app.setPalette(style.palette(theme))
-    if sys.platform == "win32":
-        f = QFont("Segoe UI")
-        f.setPointSizeF(9.5)
-        app.setFont(f)
-    app.setStyleSheet(style.qss(theme))
-    initial = " ".join(a for a in argv if not a.startswith("-psn_")).strip() or None
-    win = MainWindow(theme, initial)
-    win.show()
-    if os.environ.get("BEATSHELL_SELFTEST"):
-        _selftest(win, os.environ["BEATSHELL_SELFTEST"])
-    return app.exec()
-
-
-def _selftest(win: MainWindow, out: str) -> None:
-    """Comprobación automática (CI): arranca, espera y escribe el estado del motor en `out`."""
-    import json
-
-    def report() -> None:
-        pl = win.player
-        eng = pl.engine
-        data = {
-            "booted": pl.booted,
-            "engine_error": pl.engine_error,
-            "audio_ready": bool(eng and eng.ready),
-            "active": bool(eng and eng.active),
-            "position": eng.position if eng else 0.0,
-            "now": pl.queue.current.title if pl.queue.current else None,
-        }
-        Path(out).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        win.close()
-
-    QTimer.singleShot(int(float(os.environ.get("BEATSHELL_SELFTEST_SECONDS", "8")) * 1000), report)
+    def retheme(self) -> None:
+        """El tema ya cambió (en el sitio): repintamos iconos y todo lo demás."""
+        for apply in self._icons:
+            apply()
+        self._refresh_collections()
+        self._on_state()
+        for card in self.settings_page.cards:
+            card.setChecked(card.key == self.shell.theme_key)
+            card.update()
+        for w in self.findChildren(QWidget):
+            w.update()

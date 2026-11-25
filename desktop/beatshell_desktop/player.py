@@ -54,6 +54,8 @@ class Player(QObject):
         self.resolver = None
         self.downloader = None
         self.youtube = None
+        self.extractor = None
+        self.low_power = False
         self.booted = False
         self._pending: tuple[Track | None, float] | None = None
 
@@ -86,9 +88,17 @@ class Player(QObject):
         self.rescan()
 
     def _load_heavy(self):  # noqa: ANN202 - en un hilo
+        from .extractor import Extractor, install, lazy_import
+
+        lazy_import("yt_dlp")  # aquí solo hace falta para descargar; leer YouTube va aparte
+        lazy_import("sounddevice")  # el sonido sale del proceso de audio, no de este
         from BeatShell.audio_process import AudioEngine
         from BeatShell.services import Downloader, Resolver
         from BeatShell.sources import youtube
+
+        self.extractor = Extractor(idle_timeout=15 if self.low_power else 90)
+        install(youtube, self.extractor)
+        self.extractor.start()  # ya despierto para la primera búsqueda
 
         engine = None
         error = None
@@ -145,8 +155,25 @@ class Player(QObject):
             pass
         if self.downloader is not None:
             self.downloader.shutdown()
+        if self.extractor is not None:
+            self.extractor.shutdown()
         if self.engine is not None:
             self.engine.close()
+
+    def warm_youtube(self) -> None:
+        """Despierta el lector de YouTube (p. ej. en cuanto empiezas a escribir una búsqueda)."""
+        ex = self.extractor
+        if ex is not None and not ex.alive:
+            workers.run(ex.start)
+
+    def set_low_power(self, on: bool) -> None:
+        """Segundo plano: menos despertares y el lector de YouTube se apaga en cuanto descansa."""
+        self.low_power = on
+        self._timer.setInterval(250 if on else 50)
+        if self.extractor is not None:
+            self.extractor.idle_timeout = 15 if on else 90
+            if on:
+                self.extractor.stop()
 
     # ================================================================ estado
     @property
