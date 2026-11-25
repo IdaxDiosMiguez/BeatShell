@@ -1,0 +1,75 @@
+name: BeatShell Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["android/**", "src/BeatShell/sources/**", "src/BeatShell/models.py", ".github/workflows/android.yml"]
+    tags: ["android-v*"]
+  pull_request:
+    paths: ["android/**", "src/**", ".github/workflows/android.yml"]
+
+jobs:
+  build:
+    name: APK
+    runs-on: ubuntu-latest
+    env:
+      # Firma: si estos secretos existen se usa ese keystore; si no, el de depuración.
+      BEATSHELL_KEYSTORE_BASE64: ${{ secrets.BEATSHELL_KEYSTORE_BASE64 }}
+      BEATSHELL_KEYSTORE_PASSWORD: ${{ secrets.BEATSHELL_KEYSTORE_PASSWORD }}
+      BEATSHELL_KEY_ALIAS: ${{ secrets.BEATSHELL_KEY_ALIAS }}
+      BEATSHELL_KEY_PASSWORD: ${{ secrets.BEATSHELL_KEY_PASSWORD }}
+      BEATSHELL_VERSION_CODE: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # Chaquopy usa un Python del sistema de la misma versión que el de la app para instalar paquetes.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Prueba del puente Python (sin red)
+        run: |
+          python -m pip install "yt-dlp==2026.11.23"
+          PYTHONPATH=android/app/src/main/python:src python -c "import beatshell_android as b; print(b.selftest())"
+
+      - name: Construir APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleRelease assembleDebug
+
+      - name: Preparar artefactos
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk out/BeatShell.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk out/BeatShell-debug.apk
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BeatShell-Android
+          path: out/*.apk
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/android-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: BeatShell-Android
+          path: out
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: BeatShell Android ${{ github.ref_name }}
+          files: out/BeatShell.apk
+          draft: true
