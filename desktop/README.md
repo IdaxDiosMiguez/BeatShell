@@ -36,9 +36,9 @@ sigue y BeatShell se queda como un icono en la barra de menús (macOS) o en la b
 | | Memoria total | CPU de la interfaz |
 |---|---|---|
 | Ventana abierta, sonando | ~525 MB | ~7 % |
-| **Segundo plano** | **~250–285 MB** | **~0 %** |
+| **Segundo plano** | **~250–320 MB** | **~0 %** |
 
-*(Medido en un Mac con Apple Silicon reproduciendo desde YouTube.)*
+*(Medido en un Mac con Apple Silicon reproduciendo desde YouTube; la cifra alta es la app empaquetada.)*
 
 Cómo lo consigue:
 
