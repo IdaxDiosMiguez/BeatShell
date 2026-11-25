@@ -15,7 +15,7 @@ fn exe_name() -> &'static str {
     }
 }
 
-fn which(name: &str) -> Option<PathBuf> {
+pub fn which(name: &str) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
     std::env::split_paths(&paths)
         .map(|d| d.join(name))
