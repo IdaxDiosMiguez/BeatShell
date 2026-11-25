@@ -268,6 +268,17 @@ def cover_bytes(track: Track) -> bytes | None:
     return data
 
 
+def pixels_to_image(px: Pixels, scale: int = 16):
+    """Matriz de píxeles → imagen PIL ampliada sin suavizar (píxeles nítidos)."""
+    from PIL import Image
+
+    h = len(px)
+    w = len(px[0]) if h else 0
+    img = Image.new("RGB", (w, h))
+    img.putdata([c or (0, 0, 0) for row in px for c in row])
+    return img.resize((w * scale, h * scale), Image.Resampling.NEAREST)
+
+
 def cover_pixels(track: Track, size: int, pixel: bool = True) -> Pixels:
     data = cover_bytes(track)
     if data:

@@ -8,10 +8,11 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -25,12 +26,19 @@ from .sources import youtube
 
 
 class Resolver:
-    """Convierte cualquier Track en algo reproducible por el motor de audio."""
+    """Convierte cualquier Track en algo reproducible por el motor de audio.
 
-    def __init__(self, matches: MatchCache) -> None:
+    Orden de preferencia: archivo local (también si la canción se descargó antes) →
+    stream de alta calidad ya listo → stream rápido sin espera (y la alta calidad se
+    prepara en paralelo para cambiar en marcha).
+    """
+
+    def __init__(self, matches: MatchCache, library: Library | None = None) -> None:
         self.matches = matches
+        self.library = library
         self._locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
+        self._hq_busy: set[str] = set()
 
     def _lock_for(self, key: str) -> threading.Lock:
         with self._guard:
@@ -55,25 +63,80 @@ class Resolver:
             self.matches.put(key, {"url": m.url, "thumb": m.thumb})
             return track.url
 
-    def resolve(self, track: Track) -> Source:
+    def local_path(self, track: Track) -> str | None:
+        """Ruta del MP3 si esta canción ya está en disco (aunque venga de YouTube/Spotify)."""
         if track.path and os.path.exists(track.path):
-            return Source(input=track.path, duration=track.duration)
+            return track.path
+        if self.library is not None:
+            found = self.library.local_for(track)
+            if found:
+                track.path = found
+                return found
+        return None
+
+    def resolve(self, track: Track) -> Source:
+        path = self.local_path(track)
+        if path:
+            return Source(input=path, duration=track.duration)
         url = self.ensure_url(track)
-        src, meta = youtube.stream_info(url)
+        hq = youtube.cached_stream(url)
+        if hq is not None and hq.available_at <= time.time() + 0.3:
+            return self._finish(track, hq)
+        self.warm_hq(url)  # la alta calidad se prepara mientras ya suena la rápida
+        try:
+            src, meta = youtube.stream_info(url, fast=True)
+        except youtube.YouTubeError:
+            src, meta = youtube.stream_info(url)
+        return self._finish(track, src, meta.get("is_live"))
+
+    def _finish(self, track: Track, src: Source, live: bool | None = None) -> Source:
+        src = replace(src)  # no tocar el objeto de la caché
         if not track.duration and src.duration:
             track.duration = src.duration
-        if meta.get("is_live"):
+        if live:
             src.duration = None
         elif track.duration and not src.duration:
             src.duration = track.duration
         return src
 
+    def warm_hq(self, url: str) -> None:
+        """Resuelve en segundo plano el stream de alta calidad (y deja correr su espera)."""
+        if youtube.cached_stream(url) is not None:
+            return
+        with self._guard:
+            if url in self._hq_busy:
+                return
+            self._hq_busy.add(url)
+
+        def run() -> None:
+            try:
+                youtube.stream_info(url)
+            except Exception:
+                pass
+            finally:
+                with self._guard:
+                    self._hq_busy.discard(url)
+
+        threading.Thread(target=run, daemon=True, name="hq").start()
+
+    def hq_source(self, track: Track) -> Source | None:
+        """Bloqueante: el stream de alta calidad, listo para sonar (espera incluida)."""
+        if not track.url:
+            return None
+        src, _ = youtube.stream_info(track.url)
+        wait = src.available_at - time.time()
+        if wait > 0:
+            time.sleep(wait + 0.2)
+        return self._finish(track, src)
+
     def prefetch(self, track: Track | None) -> None:
-        if track is None or (track.path and os.path.exists(track.path)):
+        if track is None or self.local_path(track):
             return
 
         def run() -> None:
             try:
+                url = self.ensure_url(track)
+                self.warm_hq(url)
                 self.resolve(track)
             except Exception:
                 pass
@@ -260,7 +323,7 @@ class Downloader:
             self._set(job, status=FAILED, stage="Error", error=str(exc)[:200] or type(exc).__name__)
 
     def _finish(self, job: DownloadJob, path: str, status: str) -> None:
-        self.library.add_file(path)
+        self.library.add_file(path, source_key=job.key)
         job.track.path = path
         self._set(job, status=status, stage="Listo" if status == DONE else "Ya existía",
                   progress=1.0, path=path)
