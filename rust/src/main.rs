@@ -11,6 +11,7 @@ mod ffmpeg;
 mod library;
 mod models;
 mod playqueue;
+mod sources;
 mod ui;
 
 use std::time::{Duration, Instant};
@@ -35,8 +36,10 @@ fn main() -> anyhow::Result<()> {
         println!(
             "Uso: beatshell [RUTA]\n\n\
              Reproductor de música para terminal.\n\
-             RUTA puede ser una carpeta (se añade a la biblioteca), un archivo de audio o un .m3u/.m3u8.\n\n\
-             Variables: BEATSHELL_HOME (carpeta de datos), BEATSHELL_FFMPEG (ruta a ffmpeg)."
+             RUTA puede ser una carpeta (se añade a la biblioteca), un archivo de audio o un .m3u/.m3u8.\n\
+             En la barra (/) también se puede buscar en YouTube o pegar enlaces de YouTube y Spotify.\n\n\
+             Variables: BEATSHELL_HOME (carpeta de datos), BEATSHELL_FFMPEG (ruta a ffmpeg),\n\
+             BEATSHELL_YTDLP (ruta a yt-dlp)."
         );
         return Ok(());
     }
@@ -121,7 +124,8 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         KeyCode::Char('j') => app.toggle_dj(),
         KeyCode::Char('R') => app.rescan(),
         KeyCode::Char('1') => app.view = View::Queue,
-        KeyCode::Char('3') | KeyCode::Char('2') => {
+        KeyCode::Char('2') => app.view = View::Search,
+        KeyCode::Char('3') => {
             app.view = View::Library;
             app.refresh_lib_tracks();
         }
@@ -130,6 +134,7 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         _ => match app.view {
             View::Queue => queue_key(app, k),
             View::Library => library_key(app, k),
+            View::Search => search_key(app, k),
         },
     }
 }
@@ -167,6 +172,21 @@ fn queue_key(app: &mut App, k: KeyEvent) {
             app.queue.clear(true);
             app.queue_sel = 0;
         }
+        _ => {}
+    }
+}
+
+fn search_key(app: &mut App, k: KeyEvent) {
+    if let Some(d) = nav_delta(k.code) {
+        app.online.result_sel = step(app.online.result_sel, app.result_tracks().len(), d);
+        return;
+    }
+    match k.code {
+        KeyCode::Enter => app.activate_result(),
+        KeyCode::Char('a') => app.enqueue_results(false),
+        KeyCode::Char('A') => app.enqueue_results(true),
+        KeyCode::Char('i') => app.play_result_next(),
+        KeyCode::Esc => app.view = View::Queue,
         _ => {}
     }
 }

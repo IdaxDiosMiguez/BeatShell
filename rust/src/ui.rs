@@ -9,8 +9,9 @@ use ratatui::widgets::{
 };
 
 use crate::app::{App, Focus, View};
-use crate::models::{Track, fmt_time};
+use crate::models::{SPOTIFY, Track, fmt_time};
 use crate::playqueue::Repeat;
+use crate::sources::CollectionKind;
 
 const PRIMARY: Color = Color::Rgb(0xff, 0x4f, 0xd8);
 const SECONDARY: Color = Color::Rgb(0x5e, 0xe7, 0xff);
@@ -54,6 +55,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.view {
         View::Queue => draw_queue(f, app, body),
         View::Library => draw_library(f, app, body),
+        View::Search => draw_search(f, app, body),
     }
     draw_player(f, app, player);
     draw_footer(f, app, footer);
@@ -74,6 +76,8 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("  rust  ", Style::new().fg(MUTED).italic()),
         tab("1", "Cola", app.view == View::Queue),
         Span::raw(" "),
+        tab("2", "Buscar", app.view == View::Search),
+        Span::raw(" "),
         tab("3", "Biblioteca", app.view == View::Library),
     ]);
     f.render_widget(Paragraph::new(line), area);
@@ -82,7 +86,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .map(str::to_string)
         .or_else(|| app.engine_error.clone())
     {
-        let w = area.width.saturating_sub(40) as usize;
+        let w = area.width.saturating_sub(54) as usize;
         let msg: String = msg.chars().take(w).collect();
         f.render_widget(
             Paragraph::new(Span::styled(msg, Style::new().fg(ACCENT))).alignment(Alignment::Right),
@@ -95,7 +99,8 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let (text, style, focused) = match &app.input {
         Some(s) => (format!("{s}▏"), Style::new().fg(FG), true),
         None => (
-            "Pulsa / y escribe la ruta de una carpeta, un archivo de audio o un .m3u".to_string(),
+            "Pulsa / y busca en YouTube, pega un enlace de YouTube o Spotify, o una ruta local"
+                .to_string(),
             Style::new().fg(MUTED),
             false,
         ),
@@ -218,6 +223,63 @@ fn draw_library(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn draw_search(f: &mut Frame, app: &App, area: Rect) {
+    let Some(col) = app.online.results.as_ref() else {
+        let msg = app
+            .online
+            .results_status
+            .clone()
+            .unwrap_or_else(|| "Pulsa / y escribe qué quieres escuchar".to_string());
+        let p = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(msg, Style::new().fg(FG).bold())),
+            Line::from(Span::styled(
+                "Búsqueda de YouTube, enlaces de vídeos y playlists de YouTube, y playlists, álbumes o canciones de Spotify",
+                Style::new().fg(MUTED),
+            )),
+        ])
+        .alignment(Alignment::Center)
+        .block(block("Buscar", true));
+        f.render_widget(p, area);
+        return;
+    };
+    let n = col.tracks.len();
+    let title = if col.kind == CollectionKind::Search {
+        format!("⌕ «{}» · {n} resultados de YouTube", col.name)
+    } else {
+        let (icon, src) = if col.source == SPOTIFY {
+            ("●", "Spotify")
+        } else {
+            ("▶", "YouTube")
+        };
+        let kind = if col.kind == CollectionKind::Album {
+            "Álbum"
+        } else {
+            "Playlist"
+        };
+        let total: f64 = col.tracks.iter().filter_map(|t| t.duration).sum();
+        let owner = if col.owner.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", col.owner)
+        };
+        format!(
+            "{icon} {kind} de {src} · {}{owner} · {n} canciones · {}",
+            col.name,
+            fmt_time(Some(total))
+        )
+    };
+    let current_key = app.queue.current().map(Track::key);
+    let rows: Vec<Row> = col
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| track_row(i, t, current_key.as_deref() == Some(t.key().as_str())))
+        .collect();
+    let mut st = TableState::default().with_selected(Some(app.online.result_sel));
+    f.render_stateful_widget(tracks_table(rows, title, true), area, &mut st);
+}
+
 fn draw_player(f: &mut Frame, app: &App, area: Rect) {
     let outer = block("Sonando", false);
     let inner = outer.inner(area);
@@ -237,7 +299,9 @@ fn draw_player(f: &mut Frame, app: &App, area: Rect) {
         ),
         None => ("Nada sonando".to_string(), "—".to_string()),
     };
-    let state = if !app.playing() {
+    let state = if app.online.resolving.is_some() {
+        "…"
+    } else if !app.playing() {
         "■"
     } else if app.paused() {
         "⏸"
@@ -344,6 +408,15 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 ("r", "repetir"),
                 ("E", "EQ"),
                 ("j", "DJ"),
+                ("q", "salir"),
+            ],
+            View::Search => &[
+                ("Enter", "reproducir"),
+                ("a/A", "encolar/todo"),
+                ("i", "a continuación"),
+                ("␣", "play/pausa"),
+                ("n/b", "sig/ant"),
+                ("Esc", "cola"),
                 ("q", "salir"),
             ],
             View::Library => &[
