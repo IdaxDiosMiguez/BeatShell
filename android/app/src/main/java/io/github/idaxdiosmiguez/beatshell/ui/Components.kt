@@ -58,6 +58,9 @@ import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import coil3.compose.rememberAsyncImagePainter
 import io.github.idaxdiosmiguez.beatshell.core.Track
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Shuffle
 import io.github.idaxdiosmiguez.beatshell.core.fmtTime
 
 /** Una acción del menú de una canción. */
@@ -138,11 +141,16 @@ fun TrackRow(
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = { open = true })
             .padding(start = 4.dp, end = 0.dp)
-            .height(58.dp),
+            .height(64.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.width(40.dp), contentAlignment = Alignment.Center) {
-            if (current) EqBars(playing) else Text("${index + 1}", color = c.faint, fontSize = 13.sp)
+        // Portada de la canción (como en Spotify); la que suena lleva las barras encima.
+        Box(Modifier.padding(start = 12.dp, end = 12.dp).size(46.dp), contentAlignment = Alignment.Center) {
+            Cover(track.cover, Modifier.fillMaxSize(), radius = 4.dp)
+            if (current) {
+                Box(Modifier.fillMaxSize().clip(RoundedCornerShape(4.dp)).background(Color(0x99000000)),
+                    contentAlignment = Alignment.Center) { EqBars(playing) }
+            }
         }
         Column(Modifier.weight(1f).padding(end = 8.dp), verticalArrangement = Arrangement.Center) {
             Text(
@@ -201,6 +209,75 @@ fun EmptyText(text: String) {
     }
 }
 
+/**
+ * Portada de una playlist como en Spotify: la suya, o un mosaico 2×2 con las portadas de sus
+ * cuatro primeras canciones distintas.
+ */
+@Composable
+fun MosaicCover(thumb: String?, tracks: List<Track>, modifier: Modifier, radius: Dp = 4.dp) {
+    val tiles = remember(thumb, tracks) {
+        if (thumb != null) emptyList() else tracks.mapNotNull { it.cover }.distinct().take(4)
+    }
+    if (thumb != null || tiles.size < 4) {
+        Cover(thumb ?: tiles.firstOrNull(), modifier, radius)
+        return
+    }
+    Column(modifier.clip(RoundedCornerShape(radius)).background(LocalBs.current.hover)) {
+        for (r in 0..1) Row(Modifier.weight(1f)) {
+            for (k in 0..1) Cover(tiles[r * 2 + k], Modifier.weight(1f).fillMaxSize(), 0.dp)
+        }
+    }
+}
+
+/**
+ * Cabecera de playlist/álbum al estilo Spotify: degradado de fondo, portada grande centrada,
+ * nombre, autor, tipo y duración, y a la derecha aleatorio + botón de reproducir redondo.
+ */
+@Composable
+fun CollectionHero(
+    title: String,
+    owner: String,
+    info: String,
+    thumb: String?,
+    tracks: List<Track>,
+    onPlay: () -> Unit,
+    onShuffle: () -> Unit,
+    actions: @Composable () -> Unit = {},
+) {
+    val c = LocalBs.current
+    Column(
+        Modifier.fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(c.accent.copy(alpha = 0.28f), Color.Transparent)))
+            .padding(top = 16.dp),
+    ) {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            MosaicCover(thumb, tracks, Modifier.size(232.dp), radius = 6.dp)
+        }
+        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp)) {
+            Text(title, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = c.text, maxLines = 2,
+                overflow = TextOverflow.Ellipsis)
+            if (owner.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(owner, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.text, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(info, color = c.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            actions()
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onShuffle) { Icon(Icons.Rounded.Shuffle, "Aleatorio", tint = c.muted, modifier = Modifier.size(28.dp)) }
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.size(56.dp).clip(CircleShape).background(c.accent).combinedClickableCompat(onPlay),
+                contentAlignment = Alignment.Center) {
+                Icon(Icons.Rounded.PlayArrow, "Reproducir", tint = c.accentText, modifier = Modifier.size(34.dp))
+            }
+        }
+    }
+}
+
 @Composable
 fun PageHeader(title: String, subtitle: String? = null, actions: @Composable () -> Unit = {}) {
     val c = LocalBs.current
@@ -234,16 +311,26 @@ fun PillButton(text: String, primary: Boolean = false, onClick: () -> Unit) {
 private fun Modifier.combinedClickableCompat(onClick: () -> Unit) = this.combinedClickable(onClick = onClick)
 
 @Composable
-fun TextInputDialog(title: String, initial: String = "", confirm: String = "Aceptar", onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+fun TextInputDialog(
+    title: String, initial: String = "", confirm: String = "Aceptar", onDismiss: () -> Unit,
+    hint: String? = null, placeholder: String? = null, onConfirm: (String) -> Unit,
+) {
     var text by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            OutlinedTextField(
-                value = text, onValueChange = { text = it }, singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            )
+            Column {
+                if (hint != null) {
+                    Text(hint, color = LocalBs.current.muted, fontSize = 13.sp)
+                    Spacer(Modifier.height(12.dp))
+                }
+                OutlinedTextField(
+                    value = text, onValueChange = { text = it }, singleLine = true,
+                    placeholder = placeholder?.let { { Text(it) } },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                )
+            }
         },
         confirmButton = { TextButton(onClick = { if (text.isNotBlank()) onConfirm(text.trim()) }) { Text(confirm) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },

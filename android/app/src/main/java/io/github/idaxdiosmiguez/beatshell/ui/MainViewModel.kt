@@ -19,6 +19,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+private val PROFILE_RE = Regex("""open\.spotify\.com/(?:intl-[a-z-]+/)?user/|spotify:user:""")
+
+fun isSpotifyProfile(text: String) = PROFILE_RE.containsMatchIn(text)
+
+fun isSpotifyLink(text: String) = "open.spotify.com/" in text || text.trim().startsWith("spotify:")
+
 data class SearchUi(
     val loading: Boolean = false,
     val loadingText: String = "",
@@ -62,6 +68,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun submit(text: String, autoplay: Boolean = false) {
         val t = text.trim()
         if (t.isEmpty()) return
+        if (isSpotifyProfile(t)) { importSpotify(t); return }  // un perfil se importa, no se reproduce
         query.value = t
         searchJob?.cancel()
         val isLink = t.contains("://") || t.startsWith("spotify:")
@@ -83,6 +90,46 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } catch (e: BeatShellError) {
                 _search.value = SearchUi(error = e.message, results = null)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ importar de Spotify
+    /** Texto de la importación en curso (null si no hay ninguna). */
+    private val _importing = MutableStateFlow<String?>(null)
+    val importing: StateFlow<String?> = _importing.asStateFlow()
+
+    /** Id del elemento importado para abrirlo ("" = abrir la biblioteca). */
+    val imported = MutableSharedFlow<String>(extraBufferCapacity = 1)
+
+    fun importSpotify(link: String) {
+        if (_importing.value != null) { toast("Ya hay una importación en curso"); return }
+        val user = isSpotifyProfile(link)
+        _importing.value = if (user) "Leyendo el perfil de Spotify…" else "Leyendo Spotify…"
+        imported.tryEmit("")  // a la biblioteca, donde se ve el progreso
+        viewModelScope.launch {
+            try {
+                val res = Py.importSpotify(link) { _, label -> _importing.value = "Importando $label" }
+                val (_, updated) = library.importCollections(res.collections)
+                val prof = res.profile
+                val msg = if (prof == null) {
+                    val col = res.collections.first()
+                    "«${col.name}» ${if (updated > 0) "actualizada" else "importada"}: ${col.tracks.size} canciones"
+                } else buildString {
+                    val n = res.collections.size
+                    append("$n playlist${if (n == 1) "" else "s"} de ${prof.name} importadas")
+                    if (updated > 0) append(" ($updated actualizadas)")
+                    if (prof.total > prof.read) append(". Tiene ${prof.total}: Spotify solo deja leer las ${prof.read} primeras sin cuenta")
+                    if (res.failed.isNotEmpty()) append(". No se pudieron leer: ${res.failed.joinToString()}")
+                }
+                toast(msg)
+                // Una playlist se abre directamente; un perfil lleva a la biblioteca ("").
+                imported.tryEmit(if (prof != null) "" else
+                    library.playlists.value.firstOrNull { it.sourceUrl == res.collections.first().url }?.id ?: "")
+            } catch (e: BeatShellError) {
+                toast("No se pudo importar: ${e.message}")
+            } finally {
+                _importing.value = null
             }
         }
     }

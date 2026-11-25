@@ -938,6 +938,9 @@ class BeatShellApp(LibraryMixin, App):
             self._show_loading(f"Buscando «{value}» en YouTube…")
             self._do_search(value, quick)
             return False
+        if kind == "spotify_user":  # un perfil no se reproduce: se importan sus playlists
+            self._import_spotify(text)
+            return True
         if kind == "youtube_playlist":
             self._show_loading("Leyendo la playlist de YouTube…")
             self._do_collection("youtube", value)

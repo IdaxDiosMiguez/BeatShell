@@ -11,10 +11,12 @@ from __future__ import annotations
 import base64
 import json
 import re
+import threading
 import time
 import urllib.parse
 import urllib.request
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from ..models import SPOTIFY, Track
 from . import Collection
@@ -30,17 +32,31 @@ class SpotifyError(RuntimeError):
     pass
 
 
-def _get(url: str, headers: dict[str, str] | None = None, data: bytes | None = None) -> bytes:
+class RateLimited(SpotifyError):
+    pass
+
+
+def _get(url: str, headers: dict[str, str] | None = None, data: bytes | None = None,
+         retries: int = 2) -> bytes:
     req = urllib.request.Request(url, data=data, headers={"User-Agent": _UA, **(headers or {})})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return resp.read()
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise SpotifyError("Spotify no encuentra ese enlace (¿es privado?)") from None
-        raise SpotifyError(f"Spotify respondió con error {exc.code}") from None
-    except urllib.error.URLError as exc:
-        raise SpotifyError(f"No se pudo conectar con Spotify: {exc.reason}") from None
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise SpotifyError("Spotify no encuentra ese enlace (¿es privado?)") from None
+            if exc.code == 429:  # demasiadas peticiones seguidas: esperamos un poco y otra vez
+                if attempt < retries:
+                    wait = exc.headers.get("Retry-After") if exc.headers else None
+                    time.sleep(min(float(wait or 0) or 2.0 * (attempt + 1) ** 2, 10))
+                    continue
+                raise RateLimited("Spotify está limitando las peticiones: espera un minuto y "
+                                  "vuelve a intentarlo") from None
+            raise SpotifyError(f"Spotify respondió con error {exc.code}") from None
+        except urllib.error.URLError as exc:
+            raise SpotifyError(f"No se pudo conectar con Spotify: {exc.reason}") from None
+    raise SpotifyError("Spotify no respondió")
 
 
 def _artists(subtitle: str) -> str:
@@ -192,3 +208,229 @@ def fetch(ref: str, client_id: str = "", secret: str = "") -> Collection:
         except SpotifyError:
             pass  # p. ej. playlists editoriales bloqueadas en la API → probamos el embed
     return _from_embed(kind, sid)
+
+
+# ------------------------------------------------------------------ perfiles
+# La página pública de un perfil solo trae sus primeras 10 playlists públicas (el resto lo
+# carga la web con sesión). Con credenciales de API se leen todas.
+PROFILE_LIMIT = 10
+_MOBILE_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+)
+
+
+@dataclass
+class Profile:
+    id: str
+    name: str
+    playlists: list[tuple[str, str]] = field(default_factory=list)  # ('playlist:ID', nombre)
+    total: int = 0  # playlists públicas que tiene (puede ser más de las que se leyeron)
+    thumb: str | None = None  # foto de perfil
+
+    @property
+    def url(self) -> str:
+        return f"https://open.spotify.com/user/{urllib.parse.quote(self.id)}"
+
+
+def _profile_page(uid: str) -> Profile:
+    html = _get(f"https://open.spotify.com/user/{urllib.parse.quote(uid)}",
+                headers={"User-Agent": _MOBILE_UA}).decode("utf-8", "replace")
+    name, playlists, total, thumb = uid, [], 0, None
+    m = re.search(r'<script id="initialState"[^>]*>(.*?)</script>', html, re.S)
+    if m:
+        try:
+            raw = m.group(1).strip()
+            state = json.loads(raw if raw.startswith("{") else base64.b64decode(raw))
+            items = state["entities"]["items"]
+        except (KeyError, ValueError, TypeError):
+            items = {}
+        user = items.get(f"spotify:user:{uid}") or next(
+            (v for v in items.values() if isinstance(v, dict) and v.get("__typename") == "User"), None)
+        if user:
+            name = user.get("name") or uid
+            thumb = _best_image((user.get("avatar") or {}).get("sources"))
+            if thumb and "scdn.co" not in thumb:
+                thumb = None  # fotos de Facebook: enlaces firmados que caducan
+            pub = user.get("publicPlaylistsV2") or {}
+            for it in pub.get("items") or []:
+                data = it.get("data") or {}
+                uri = data.get("uri") or it.get("_uri") or ""
+                if uri.startswith("spotify:playlist:"):
+                    playlists.append((f"playlist:{uri.rsplit(':', 1)[1]}", data.get("name") or "Playlist"))
+            total = pub.get("totalCount") or len(playlists)
+    if not playlists:  # si cambian el formato, al menos los enlaces de la página
+        seen = dict.fromkeys(re.findall(r'href="/playlist/([A-Za-z0-9]{22})"', html))
+        playlists = [(f"playlist:{pid}", "Playlist") for pid in seen]
+        total = max(total, len(playlists))
+    if not m and not playlists:
+        raise SpotifyError("No se pudo leer ese perfil de Spotify")
+    return Profile(id=uid, name=name, playlists=playlists, total=total, thumb=thumb)
+
+
+def _profile_api(uid: str, client_id: str, secret: str) -> Profile:
+    tok = _token(client_id, secret)
+    q = urllib.parse.quote(uid)
+    user = _api(f"users/{q}", tok)
+    page = _api(f"users/{q}/playlists?limit=50", tok)
+    playlists = []
+    while True:
+        for p in page.get("items") or []:
+            # La API también devuelve las playlists que sigue: nos quedamos con las suyas.
+            if p and p.get("id") and ((p.get("owner") or {}).get("id") or "").lower() == uid.lower():
+                playlists.append((f"playlist:{p['id']}", p.get("name") or "Playlist"))
+        if not page.get("next"):
+            break
+        page = _api(page["next"], tok)
+    imgs = user.get("images") or []
+    return Profile(id=uid, name=user.get("display_name") or uid, playlists=playlists,
+                   total=len(playlists), thumb=_best_image(imgs))
+
+
+def user_playlists(uid: str, client_id: str = "", secret: str = "") -> Profile:
+    """Playlists públicas de un perfil (todas con credenciales; si no, las 10 primeras)."""
+    if client_id and secret:
+        try:
+            return _profile_api(uid, client_id, secret)
+        except SpotifyError:
+            pass
+    return _profile_page(uid)
+
+
+@dataclass
+class ImportResult:
+    collections: list[Collection]
+    profile: Profile | None = None
+    failed: list[str] = field(default_factory=list)  # playlists que no se pudieron leer
+
+
+def import_link(text: str, client_id: str = "", secret: str = "",
+                progress: Callable[[int, int, str], None] | None = None) -> ImportResult:
+    """Lee lo necesario para importar un enlace de Spotify a la biblioteca.
+
+    Admite playlists, álbumes y perfiles (todas sus playlists públicas). `progress(i, n,
+    nombre)` se llama antes de leer cada playlist de un perfil.
+    """
+    from . import classify
+
+    kind, value = classify(text)
+    if kind == "spotify":
+        if value.startswith("track:"):
+            raise SpotifyError("Ese enlace es de una canción: pega el de una playlist, "
+                               "un álbum o un perfil")
+        col = fetch(value, client_id, secret)
+        if not col.tracks:
+            raise SpotifyError("Esa playlist no tiene canciones disponibles")
+        fill_covers(col.tracks)
+        return ImportResult([col])
+    if kind != "spotify_user":
+        raise SpotifyError("Pega un enlace de Spotify: de una playlist, un álbum o un perfil")
+    prof = user_playlists(value, client_id, secret)
+    if not prof.playlists:
+        raise SpotifyError(f"«{prof.name}» no tiene playlists públicas")
+    out = ImportResult([], profile=prof)
+    for i, (ref, name) in enumerate(prof.playlists):
+        if progress:
+            progress(i, len(prof.playlists), name)
+        try:
+            col = fetch(ref, client_id, secret)
+        except RateLimited:
+            time.sleep(3)  # una pausa y se sigue con la siguiente
+            out.failed.append(name)
+            continue
+        except SpotifyError:
+            out.failed.append(name)
+            continue
+        if col.tracks:
+            out.collections.append(col)
+        else:
+            out.failed.append(name)
+    if not out.collections:
+        raise SpotifyError(f"No se pudo leer ninguna playlist de «{prof.name}»")
+    # Las portadas, al final: si Spotify limita las peticiones solo se pierden portadas.
+    fill_covers([t for c in out.collections for t in c.tracks])
+    return out
+
+
+def _cover(uri: str, stop: "threading.Event") -> str | None:
+    if stop.is_set():
+        return None
+    q = urllib.parse.quote(uri, safe="")
+    try:
+        data = json.loads(_get(f"https://open.spotify.com/oembed?url={q}", retries=0))
+    except RateLimited:
+        stop.set()  # Spotify pide calma: las demás se quedan sin portada propia
+        return None
+    except (SpotifyError, ValueError):
+        return None
+    url = data.get("thumbnail_url") or ""
+    # Mismo id de imagen en el CDN de siempre y a 640 px.
+    m = re.search(r"/image/([0-9a-f]{40})$", url)
+    return f"https://i.scdn.co/image/{m.group(1).replace('ab67616d00001e02', 'ab67616d0000b273')}" \
+        if m else (url or None)
+
+
+_COVERS: dict[str, str] | None = None
+_COVERS_LOCK = threading.Lock()
+
+
+def _covers_path():  # noqa: ANN202
+    try:
+        from ..config import CACHE_DIR
+
+        return CACHE_DIR / "spotify_covers.json"
+    except Exception:  # noqa: BLE001 - sin carpeta de caché (p. ej. Android) no se guarda
+        return None
+
+
+def _known_covers() -> dict[str, str]:
+    global _COVERS
+    with _COVERS_LOCK:
+        if _COVERS is None:
+            _COVERS = {}
+            path = _covers_path()
+            try:
+                if path is not None and path.exists():
+                    _COVERS = json.loads(path.read_text("utf-8"))
+            except (OSError, ValueError):
+                _COVERS = {}
+        return _COVERS
+
+
+def fill_covers(tracks: list[Track], workers: int = 6) -> None:
+    """Pone a cada canción la portada de su álbum, como en Spotify.
+
+    El embed de una playlist no las trae; el oEmbed público de cada canción sí (~0,2 s cada
+    una, en paralelo). Se recuerdan en disco para no volver a pedirlas, y si Spotify empieza a
+    limitar las peticiones se deja de preguntar: esas canciones se quedan sin portada propia.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    known = _known_covers()
+    todo = []
+    for t in tracks:
+        if t.thumb or not t.spotify_uri:
+            continue
+        if t.spotify_uri in known:
+            t.thumb = known[t.spotify_uri]
+        else:
+            todo.append(t)
+    if not todo:
+        return
+    stop = threading.Event()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        found = list(pool.map(lambda t: _cover(t.spotify_uri, stop), todo))
+    new = {t.spotify_uri: url for t, url in zip(todo, found) if url}
+    for t in todo:
+        t.thumb = new.get(t.spotify_uri)
+    if new:
+        with _COVERS_LOCK:
+            known.update(new)
+            path = _covers_path()
+            try:
+                if path is not None:
+                    tmp = path.with_suffix(".tmp")
+                    tmp.write_text(json.dumps(known), "utf-8")
+                    tmp.replace(path)
+            except OSError:
+                pass

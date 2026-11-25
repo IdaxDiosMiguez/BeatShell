@@ -39,6 +39,10 @@ Requisitos: Android 7.0 o superior en un teléfono de 64 bits (prácticamente to
 - **Enlaces**: pega un enlace en la barra (o *Pegar enlace*), o compártelo desde YouTube, Spotify o el
   navegador con **Compartir → BeatShell**. Admite vídeos y playlists de YouTube y canciones, álbumes
   y playlists de Spotify (cada canción de Spotify se busca en YouTube al reproducirla).
+- **Importar de Spotify**: *Biblioteca → Importar de Spotify* (o comparte el enlace con BeatShell).
+  Con el enlace de una playlist o un álbum se guarda en la biblioteca; con el de un **perfil**, todas sus
+  playlists públicas (las 10 primeras: Spotify no enseña más sin cuenta). Se ven como en Spotify: portada,
+  nombre y autor, y la portada del álbum en cada canción. Importar otra vez actualiza en vez de duplicar.
   Desde Android 12, los enlaces que tocas en el navegador o en otras apps se abren en su app
   oficial o en el navegador; para que BeatShell aparezca en «Abrir con», actívalo en *Ajustes del
   sistema → Apps → BeatShell → Abrir de forma predeterminada → Añadir enlace*. Compartir funciona siempre.

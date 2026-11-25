@@ -125,6 +125,46 @@ class Library private constructor(private val context: Context) {
         (col.url != null && it.sourceUrl == col.url) || (it.name == col.name && it.kind == col.kind)
     }
 
+    /**
+     * Guarda playlists importadas. Si una ya estaba (mismo enlace) se actualizan sus canciones en
+     * vez de duplicarla, y las descargadas siguen usando el archivo. Devuelve (nuevas, actualizadas).
+     */
+    fun importCollections(cols: List<Collection>): Pair<Int, Int> {
+        var created = 0
+        var updated = 0
+        fun ident(t: Track) = t.spotifyUri ?: t.url ?: "${t.artist}|${t.title}".lowercase()
+        edit { cur ->
+            val out = cur.toMutableList()
+            for (col in cols) {
+                val kind = if (col.kind == "album") KIND_ALBUM else KIND_PLAYLIST
+                val i = out.indexOfFirst { col.url != null && it.sourceUrl == col.url && it.kind == kind }
+                if (i < 0) {
+                    val names = out.map { it.name.lowercase() }.toSet()
+                    var name = col.name.trim().ifEmpty { "Playlist" }
+                    if (name.lowercase() in names) {
+                        var n = 2
+                        while ("$name ($n)".lowercase() in names) n++
+                        name = "$name ($n)"
+                    }
+                    out += Playlist(name, col.tracks.map { it.copyNew() }, kind = kind, sourceUrl = col.url,
+                        artist = col.owner, thumb = col.thumb)
+                    created++
+                } else {
+                    val old = out[i].tracks.associateBy(::ident)
+                    val tracks = col.tracks.map { t ->
+                        val prev = old[ident(t)]
+                        t.copyNew().copy(path = t.path ?: prev?.path, url = t.url ?: prev?.url)
+                    }
+                    out[i] = out[i].copy(tracks = tracks, thumb = col.thumb ?: out[i].thumb,
+                        artist = col.owner.ifBlank { out[i].artist })
+                    updated++
+                }
+            }
+            out
+        }
+        return created to updated
+    }
+
     fun rename(id: String, name: String) = edit { l -> l.map { if (it.id == id) it.copy(name = name.trim()) else it } }
 
     fun delete(id: String) = edit { l -> l.filterNot { it.id == id || it.parent == id } }

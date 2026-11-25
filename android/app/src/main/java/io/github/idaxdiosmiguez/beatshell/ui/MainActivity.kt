@@ -53,6 +53,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import io.github.idaxdiosmiguez.beatshell.core.Py
 import io.github.idaxdiosmiguez.beatshell.core.Track
 
 enum class Tab(val label: String) { SEARCH("Buscar"), LIBRARY("Biblioteca"), QUEUE("Cola") }
@@ -103,6 +104,14 @@ fun App(vm: MainViewModel, intents: MutableStateFlow<Intent?>) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     var addTracks by remember { mutableStateOf<List<Track>?>(null) }
     var newPlaylistFor by remember { mutableStateOf<List<Track>?>(null) }
+    var spotifyImport by remember { mutableStateOf<String?>(null) }  // texto inicial del diálogo
+    LaunchedEffect(Unit) {
+        // Al importar una sola playlist, se abre en la biblioteca.
+        vm.imported.collect { id ->
+            tab = Tab.LIBRARY; expanded = false
+            libPage = if (id.isEmpty()) LibPage.Home else LibPage.Saved(id)
+        }
+    }
     val snackbar = remember { SnackbarHostState() }
     val actions = remember(vm) { TrackActions(vm) { addTracks = it } }
 
@@ -205,7 +214,12 @@ fun App(vm: MainViewModel, intents: MutableStateFlow<Intent?>) {
                     Tab.LIBRARY -> when (val p = libPage) {
                         LibPage.Home -> LibraryHome(vm, { libPage = it }, { newPlaylistFor = emptyList() },
                             { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
-                            { exportLauncher.launch("playlists.json") })
+                            { exportLauncher.launch("playlists.json") },
+                            {
+                                val clip = (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                                    .primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                                spotifyImport = Py.extractLink(clip)?.takeIf { isSpotifyLink(it) }.orEmpty()
+                            })
                         LibPage.Local -> LocalScreen(vm, actions, ui, hasAudio, { audioLauncher.launch(audioPermission) }) { libPage = LibPage.Home }
                         LibPage.Downloads -> DownloadsScreen { libPage = LibPage.Home }
                         LibPage.Settings -> SettingsScreen(vm) { libPage = LibPage.Home }
@@ -245,6 +259,16 @@ fun App(vm: MainViewModel, intents: MutableStateFlow<Intent?>) {
             dismissButton = { TextButton(onClick = { addTracks = null }) { Text("Cancelar") } },
             containerColor = c.selected,
         )
+    }
+    spotifyImport?.let { initial ->
+        TextInputDialog(
+            "Importar de Spotify", initial, "Importar", { spotifyImport = null },
+            hint = "Enlace de una playlist, un álbum o un perfil. Con un perfil se importan todas sus playlists públicas.",
+            placeholder = "https://open.spotify.com/…",
+        ) {
+            spotifyImport = null
+            if (isSpotifyLink(it)) vm.importSpotify(it) else vm.toast("Eso no es un enlace de Spotify")
+        }
     }
     newPlaylistFor?.let { tracks ->
         TextInputDialog("Nueva playlist", "", "Crear", { newPlaylistFor = null }) {

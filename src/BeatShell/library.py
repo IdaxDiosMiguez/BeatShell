@@ -366,6 +366,57 @@ class PlaylistStore:
         self.save()
         return p
 
+    def by_url(self, url: str | None, kind: str | None = None) -> Playlist | None:
+        return next((p for p in self.items if url and p.source_url == url
+                     and (kind is None or p.kind == kind)), None)
+
+    def import_collections(self, cols: Iterable, parent: str | None = None,
+                           folder: str | None = None, folder_url: str | None = None,
+                           folder_thumb: str | None = None,
+                           ) -> tuple[Playlist | None, int, int]:
+        """Guarda playlists/álbumes importados (objetos `Collection`).
+
+        Si una ya estaba (mismo enlace), se actualizan sus canciones en vez de duplicarla; las
+        que ya se habían descargado siguen usando el archivo. Con `folder`, todo va dentro de
+        esa carpeta (la misma si ya se importó antes desde `folder_url`).
+        Devuelve (carpeta o el elemento si solo hay uno, nuevas, actualizadas).
+        """
+        box = None
+        if folder:
+            box = self.by_url(folder_url, FOLDER)
+            if box is None:
+                box = self.create(folder, kind=FOLDER, parent=parent, source_url=folder_url)
+            box.thumb = folder_thumb or box.thumb
+            parent = box.id
+        created = updated = 0
+        last = None
+        for col in cols:
+            kind = ALBUM if col.kind == "album" else PLAYLIST
+            p = self.by_url(col.url, kind)
+            if p is None:
+                p = Playlist(name=self.unique_name(col.name.strip() or "Playlist", kind),
+                             tracks=[t.copy() for t in col.tracks], source_url=col.url, kind=kind,
+                             parent=parent if self.get(parent) else None,
+                             artist=col.owner, thumb=col.thumb)  # en playlists: su autor
+                self.items.append(p)
+                created += 1
+            else:
+                # `key` cambia al tener archivo: se compara por el enlace de origen.
+                def ident(t: Track) -> str:
+                    return t.spotify_uri or t.url or f"{t.artist}|{t.title}".lower()
+                old = {ident(t): t for t in p.tracks}
+                p.tracks = [t.copy() for t in col.tracks]
+                for t in p.tracks:
+                    if prev := old.get(ident(t)):
+                        t.path = t.path or prev.path
+                        t.url = t.url or prev.url
+                p.thumb = col.thumb or p.thumb
+                p.artist = col.owner or p.artist
+                updated += 1
+            last = p
+        self.save()
+        return (box or last), created, updated
+
     def delete(self, pid: str) -> None:
         """Borra un elemento. Si es una carpeta, su contenido sube un nivel (no se pierde)."""
         p = self.get(pid)

@@ -18,6 +18,10 @@ fun interface PyProgress {
 
 class BeatShellError(message: String, val network: Boolean = false) : Exception(message)
 
+data class SpotifyProfile(val name: String, val total: Int, val read: Int)
+
+data class SpotifyImport(val collections: List<Collection>, val profile: SpotifyProfile?, val failed: List<String>)
+
 /** Stream directo de YouTube ya resuelto. */
 data class StreamInfo(
     val url: String,
@@ -93,6 +97,20 @@ object Py {
 
     /** Texto escrito o compartido: búsqueda, vídeo, playlist de YouTube o enlace de Spotify. */
     suspend fun resolve(text: String): Collection = Collection.fromJson(call("resolve", text))
+
+    /** Enlace de Spotify (playlist, álbum o perfil entero) → playlists para guardar. */
+    suspend fun importSpotify(link: String, progress: PyProgress): SpotifyImport {
+        val o = JSONObject(call("import_spotify", link, progress))
+        val cols = o.getJSONArray("collections")
+        val failed = o.optJSONArray("failed")
+        return SpotifyImport(
+            collections = (0 until cols.length()).map { Collection.fromJson(cols.getJSONObject(it).toString()) },
+            profile = o.optJSONObject("profile")?.let {
+                SpotifyProfile(it.getString("name"), it.optInt("total"), it.optInt("read"))
+            },
+            failed = (0 until (failed?.length() ?: 0)).map { failed!!.getString(it) },
+        )
+    }
 
     fun extractLink(text: String): String? = runCatching { callBlocking("extract_link", text) }
         .getOrNull()?.takeIf { it.isNotBlank() && it != "None" }

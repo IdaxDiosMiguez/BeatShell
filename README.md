@@ -10,6 +10,9 @@ logo en fuente de 5×5, visualizador de espectro en tiempo real y temas de color
   artista, álbum, nº de pista y portada incrustados.
 - **Biblioteca organizada**: guarda playlists, álbumes y artistas, y agrúpalos en carpetas (y subcarpetas).
   Al descargar, todo pasa solo a usar el MP3.
+- **Importar de Spotify**: pega el enlace de una playlist, un álbum o un **perfil** y se guardan en tu
+  biblioteca con su nombre, autor y portada (de un perfil, todas sus playlists públicas en una carpeta).
+  Si vuelves a importar, se actualizan en vez de duplicarse.
 - **Exportar e importar** playlists en `.m3u8` (VLC, foobar2000, Music, Winamp…).
 - **Ecualizador** de 10 bandas con 13 presets que se escuchan al momento, y **modo DJ** con fundidos entre
   canciones, volumen nivelado y radio infinita.
@@ -67,6 +70,7 @@ Todo empieza en la **barra de arriba** (pulsa `/` para ir a ella):
 | enlace de vídeo de YouTube | Suena (o se añade a la cola si ya hay algo sonando). |
 | enlace de playlist de YouTube | Muestra la playlist: `Enter` reproducir · `A` encolar todo · `G` guardar · `D` descargar. |
 | enlace de Spotify (canción/álbum/playlist) | Igual que arriba. Las canciones se buscan en YouTube al reproducirlas. |
+| enlace de un perfil de Spotify | Importa sus playlists públicas a la biblioteca, en una carpeta con su nombre. |
 | ruta a una carpeta | La añade a la biblioteca. Puedes **arrastrar la carpeta a la terminal**. |
 | ruta a un archivo de audio | Lo reproduce. |
 | ruta a un `.m3u` / `.m3u8` | Importa la playlist. |
@@ -86,7 +90,8 @@ A la izquierda, un árbol con todo lo tuyo:
 - `g` sobre cualquier canción: añadirla a una playlist, **guardar su álbum** o **seguir a su artista**.
 - `G` sobre una playlist o álbum de YouTube/Spotify: guardarlo entero en la biblioteca.
 - `N` nueva playlist · `C` nueva carpeta · `M` mover a una carpeta · `e` renombrar · `x` quitar.
-- `Ctrl+E` exporta la playlist o álbum seleccionado a `.m3u8`; `Ctrl+O` importa uno.
+- `Ctrl+E` exporta la playlist o álbum seleccionado a `.m3u8`; `Ctrl+O` importa: un `.m3u8` o un enlace
+  de Spotify (playlist, álbum o perfil entero).
 - Enter sobre una carpeta reproduce todo lo que contiene.
 
 ### Ecualizador y modo DJ
@@ -154,6 +159,14 @@ Los botones del reproductor (◀◀ ▶ ▶▶, aleatorio, repetir, volumen) tam
 Sin configurar nada, Spotify solo deja leer las primeras 100 canciones de una playlist. Para importar
 playlists completas, crea una app gratuita en <https://developer.spotify.com/dashboard>, copia su
 *Client ID* y *Client Secret* en `config.json` y listo.
+
+### Importar un perfil de Spotify
+
+Pega el enlace de un perfil (`open.spotify.com/user/…`) en la barra o en *Importar*: sus playlists
+públicas se guardan en una carpeta con su nombre, cada una con su portada y su autor, y las canciones
+con la portada de su álbum. Sin credenciales, Spotify solo enseña las **10 primeras** playlists públicas
+de un perfil; con las credenciales de arriba se importan todas. Si Spotify limita las peticiones
+(muchas importaciones seguidas), espera un minuto: lo ya importado no se pierde.
 
 ## Cosas a saber
 

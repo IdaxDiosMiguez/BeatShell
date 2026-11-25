@@ -142,7 +142,7 @@ def search(query: str, limit: int = 25) -> str:
                        "thumb": None, "url": None, "tracks": [_track(t) for t in tracks]})
 
 
-_URL_RE = re.compile(r"(https?://\S+|spotify:(?:track|album|playlist):[A-Za-z0-9]+)")
+_URL_RE = re.compile(r"(https?://\S+|spotify:(?:track|album|playlist):[A-Za-z0-9]+|spotify:user:[^\s/?#]+)")
 
 
 def extract_link(text: str) -> str | None:
@@ -164,7 +164,11 @@ def resolve(text: str) -> str:
         col = spotify.fetch(value)
         if not col.tracks:
             raise RuntimeError("Ese enlace de Spotify no tiene canciones disponibles")
+        if col.kind == "playlist":
+            spotify.fill_covers(col.tracks, workers=16)  # portada de cada canción, como en Spotify
         return json.dumps(_collection(col))
+    if kind == "spotify_user":
+        raise RuntimeError("Es un perfil de Spotify: impórtalo desde Biblioteca → Importar de Spotify")
     if kind == "youtube_playlist":
         col = yt.playlist(value)
         if not col.tracks:
@@ -178,6 +182,31 @@ def resolve(text: str) -> str:
     if kind == "url":
         raise RuntimeError("Ese enlace no es de YouTube ni de Spotify")
     return search(value)
+
+
+@_network
+def import_spotify(text: str, progress: Any = None) -> str:
+    """Enlace de Spotify (playlist, álbum o perfil) → playlists listas para guardar.
+
+    `progress` es un objeto Java con `update(float, String)` (o None).
+    """
+    _install_stubs()
+    from BeatShell.sources import spotify
+
+    def step(i: int, n: int, name: str) -> None:
+        if progress is not None:
+            progress.update(i / max(n, 1), f"{i + 1}/{n} · {name}")
+
+    res = spotify.import_link(extract_link(text) or text, progress=step)
+    prof = res.profile
+    return json.dumps({
+        "profile": None if prof is None else {
+            "name": prof.name, "url": prof.url, "thumb": prof.thumb,
+            "total": prof.total, "read": len(prof.playlists),
+        },
+        "collections": [_collection(c) for c in res.collections],
+        "failed": res.failed,
+    })
 
 
 # --------------------------------------------------------------------- streams
@@ -405,6 +434,7 @@ def selftest() -> str:
         "https://www.youtube.com/playlist?list=PL123": "youtube_playlist",
         "https://open.spotify.com/intl-es/album/4aawyAB9vmqN3uQ7FjRGTy?si=x": "spotify",
         "Mira esto https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC": "spotify",
+        "https://open.spotify.com/user/31abcxyz?si=1": "spotify_user",
         "bad bunny": "search",
     }
     for text, want in cases.items():
