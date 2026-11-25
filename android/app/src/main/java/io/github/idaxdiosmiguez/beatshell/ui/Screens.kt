@@ -176,7 +176,7 @@ private fun SearchWelcome(onPaste: () -> Unit) {
         Text("Busca lo que quieras escuchar", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = c.text)
         Spacer(Modifier.height(6.dp))
         Text(
-            "También puedes pegar o compartir con BeatShell enlaces de YouTube (vídeos y playlists) y de Spotify (canciones, álbumes y playlists).",
+            "También puedes pegar o compartir con BeatShell enlaces de YouTube (vídeos y playlists) y de Spotify (canciones, álbumes, playlists y perfiles: se importan sus playlists públicas).",
             color = c.muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
         Spacer(Modifier.height(18.dp))
@@ -205,12 +205,30 @@ fun CollectionView(vm: MainViewModel, actions: TrackActions, col: Collection, ui
         onClick = { vm.playResult(col, it) },
         menu = { _, t -> actions.common(t) },
         header = {
-            Column {
-                if (col.kind != "search" && col.thumb != null) {
-                    Row(Modifier.padding(start = 16.dp, top = 8.dp)) {
-                        Cover(col.thumb, Modifier.size(96.dp))
+            val more: @Composable () -> Unit = {
+                var open by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { open = true }) { Icon(Icons.Rounded.MoreVert, "Más", tint = c.muted) }
+                    DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                        DropdownMenuItem(text = { Text("Añadir todo a la cola") }, onClick = { open = false; vm.enqueue(col.tracks, false) })
+                        DropdownMenuItem(text = { Text("Guardar en biblioteca") }, onClick = { open = false; vm.saveCollection(col) })
+                        DropdownMenuItem(text = { Text("Añadir a playlist…") }, onClick = { open = false; actions.addToPlaylist(col.tracks) })
+                        DropdownMenuItem(text = { Text("Descargar todo (M4A)") }, onClick = { open = false; vm.download(col.tracks) })
                     }
                 }
+            }
+            if (col.kind == "playlist" || col.kind == "album") {
+                CollectionHero(
+                    title = col.name,
+                    owner = col.owner,
+                    info = listOfNotNull(loadingText ?: label, summary(col.tracks)).joinToString(" · "),
+                    thumb = col.thumb,
+                    tracks = col.tracks,
+                    onPlay = { vm.player.playList(col.tracks) },
+                    onShuffle = { vm.player.shuffleList(col.tracks) },
+                    actions = more,
+                )
+            } else Column {
                 PageHeader(
                     title = if (col.kind == "search") "Resultados" else col.name,
                     subtitle = listOfNotNull(loadingText ?: label, col.owner.takeIf { it.isNotBlank() && col.kind != "search" },
@@ -253,9 +271,11 @@ fun LibraryHome(
     onNewPlaylist: () -> Unit,
     onImport: () -> Unit,
     onExport: () -> Unit,
+    onImportSpotify: () -> Unit,
 ) {
     val c = LocalBs.current
     val playlists by vm.library.playlists.collectAsState()
+    val importing by vm.importing.collectAsState()
     val jobs by Downloads.jobs.collectAsState()
     LazyColumn(Modifier.fillMaxSize()) {
         item {
@@ -266,10 +286,24 @@ fun LibraryHome(
                     IconButton(onClick = { more = true }) { Icon(Icons.Rounded.MoreVert, "Más", tint = c.muted) }
                     DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
                         DropdownMenuItem(text = { Text("Nueva playlist") }, onClick = { more = false; onNewPlaylist() })
+                        DropdownMenuItem(text = { Text("Importar de Spotify…") }, onClick = { more = false; onImportSpotify() })
                         DropdownMenuItem(text = { Text("Importar playlists.json") }, onClick = { more = false; onImport() })
                         DropdownMenuItem(text = { Text("Exportar playlists.json") }, onClick = { more = false; onExport() })
                     }
                 }
+            }
+        }
+        item {
+            val busy = importing
+            if (busy != null) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text(busy, color = c.text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(6.dp))
+                    LinearProgressIndicator(Modifier.fillMaxWidth(), color = c.accent, trackColor = c.hover)
+                }
+            } else {
+                NavRow(Icons.Rounded.Add, "Importar de Spotify",
+                    "Pega el enlace de una playlist o de un perfil", onImportSpotify)
             }
         }
         item { NavRow(Icons.Rounded.MusicNote, "Música del teléfono", "Canciones guardadas en este dispositivo") { open(LibPage.Local) } }
@@ -319,15 +353,18 @@ private fun NavRow(icon: ImageVector, title: String, subtitle: String, onClick: 
 private fun PlaylistRow(p: Playlist, onClick: () -> Unit) {
     val c = LocalBs.current
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Cover(p.cover, Modifier.size(48.dp))
+        // Como en Spotify: portada (o mosaico), nombre y «Playlist · autor»
+        MosaicCover(p.thumb, p.tracks, Modifier.size(64.dp))
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(p.name, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val kind = if (p.kind == KIND_ALBUM) "Álbum" + (if (p.artist.isNotBlank()) " · ${p.artist}" else "") else "Playlist"
-            Text("$kind · ${summary(p.tracks)}", color = c.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(p.name, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(3.dp))
+            val kind = if (p.kind == KIND_ALBUM) "Álbum" else "Playlist"
+            val who = p.artist.ifBlank { if (p.tracks.size == 1) "1 canción" else "${p.tracks.size} canciones" }
+            Text("$kind · $who", color = c.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -380,17 +417,17 @@ fun SavedPlaylistScreen(vm: MainViewModel, actions: TrackActions, id: String, ui
                 )
             },
             header = {
-                Column {
-                    Row(Modifier.padding(start = 16.dp, top = 4.dp)) { Cover(p.cover, Modifier.size(120.dp)) }
-                    PageHeader(
-                        p.name,
-                        listOfNotNull(if (p.kind == KIND_ALBUM) "Álbum" else "Playlist", p.artist.takeIf { it.isNotBlank() },
-                            summary(p.tracks)).joinToString(" · "),
-                    ) {
-                        PillButton("Reproducir", primary = true) { vm.player.playList(p.tracks) }
-                        PillButton("Aleatorio") { vm.player.shuffleList(p.tracks) }
-                    }
-                }
+                val spotify = p.sourceUrl?.contains("spotify.com") == true
+                CollectionHero(
+                    title = p.name,
+                    owner = p.artist,
+                    info = listOf(if (p.kind == KIND_ALBUM) "Álbum" else if (spotify) "Playlist pública" else "Playlist",
+                        summary(p.tracks)).joinToString(" · "),
+                    thumb = p.thumb,
+                    tracks = p.tracks,
+                    onPlay = { vm.player.playList(p.tracks) },
+                    onShuffle = { vm.player.shuffleList(p.tracks) },
+                )
             },
             empty = "Esta playlist está vacía. Añade canciones desde su menú «⋮».",
         )
