@@ -263,6 +263,7 @@ HELP_SECTIONS = [
         ("texto", "Buscar en YouTube"),
         ("+texto", "Añadir directamente el primer resultado a la cola"),
         ("enlace", "YouTube (vídeo o playlist) o Spotify (canción, álbum, playlist)"),
+        ("perfil", "Enlace de un perfil de Spotify: importa sus playlists públicas"),
         ("ruta", "Carpeta (biblioteca), archivo de audio o playlist .m3u8 (importar)"),
         ("Esc", "Volver a la lista"),
     ]),
@@ -284,7 +285,7 @@ HELP_SECTIONS = [
         ("e", "Renombrar"),
         ("x", "Quitar de la biblioteca (en el árbol)"),
         ("Ctrl+E", "Exportar playlist a .m3u8"),
-        ("Ctrl+O", "Importar playlist .m3u/.m3u8"),
+        ("Ctrl+O", "Importar: enlace de Spotify (playlist, álbum, perfil) o .m3u8"),
         ("f · R", "Añadir carpeta de música · re-escanear"),
     ]),
     ("General", [

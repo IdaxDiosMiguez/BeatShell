@@ -14,7 +14,7 @@ from textual.widgets import Input, Label, Tree
 from ..library import ALBUM, ARTIST, FOLDER, KIND_LABEL, PLAYLIST, export_m3u, import_m3u
 from ..models import Track, fmt_time
 from ..services import safe_name
-from ..sources import youtube
+from ..sources import classify, spotify, youtube
 from .screens import (
     NEW_FOLDER,
     NEW_PLAYLIST,
@@ -453,13 +453,19 @@ class LibraryMixin:
                                          "Las canciones de internet se guardan como enlace."), chosen)
 
     def action_import_playlist(self) -> None:
-        def chosen(path: str | None) -> None:
-            if path:
-                self._import_playlist(path)
-        self.push_screen(TextPrompt("Importar playlist .m3u / .m3u8", "/ruta/a/playlist.m3u8",
-                                    hint="Puedes arrastrar el archivo a la terminal."), chosen)
+        def chosen(text: str | None) -> None:
+            if text:
+                self._import_playlist(text)
+        self.push_screen(TextPrompt(
+            "Importar playlist", "Enlace de Spotify o /ruta/a/playlist.m3u8",
+            hint="Spotify: enlace de una playlist, un álbum o un perfil (se importan todas sus "
+                 "playlists públicas). También un .m3u/.m3u8: puedes arrastrarlo a la terminal."),
+            chosen)
 
     def _import_playlist(self, path: str) -> None:
+        if classify(path)[0] in ("spotify", "spotify_user"):
+            self._import_spotify(path)
+            return
         p = Path(path.strip().strip("'\"")).expanduser()
         try:
             name, tracks, missing = import_m3u(p)
@@ -477,3 +483,54 @@ class LibraryMixin:
         if missing:
             msg += f" ({missing} archivos no se encontraron)"
         self.notify(msg, title="Playlist importada", timeout=6)
+
+    # ---------------------------------------------------------------- Spotify
+    def _import_spotify(self, link: str) -> None:
+        user = classify(link)[0] == "spotify_user"
+        self.notify("Leyendo el perfil de Spotify…" if user else "Leyendo Spotify…", timeout=3)
+        self._do_import_spotify(link, self._target_folder)
+
+    @work(thread=True, group="spotify-import", exclusive=True)
+    def _do_import_spotify(self, link: str, parent: str | None) -> None:
+        def progress(i: int, n: int, name: str) -> None:
+            self.call_from_thread(self.notify, f"{i + 1}/{n} · {name}", title="Importando de Spotify",
+                                  timeout=2)
+        try:
+            res = spotify.import_link(link, self.cfg.spotify_client_id,
+                                      self.cfg.spotify_client_secret, progress)
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self.notify, str(exc), title="No se pudo importar", severity="error")
+            return
+        self.call_from_thread(self._spotify_imported, res, parent)
+
+    def _spotify_imported(self, res, parent: str | None) -> None:  # noqa: ANN001
+        prof = res.profile
+        item, created, updated = self.playlists.import_collections(
+            res.collections, parent=parent,
+            folder=prof.name if prof else None, folder_url=prof.url if prof else None,
+            folder_thumb=prof.thumb if prof else None)
+        if item is not None:
+            self._lib_sel = ("item", item.id)
+            if item.kind == FOLDER:
+                self._lib_expanded.add(item.id)
+        self.action_view("library")
+        self._refresh_library()
+        if prof is None:
+            col = res.collections[0]
+            msg = f"«{col.name}»: {len(col.tracks)} canciones"
+            if updated:
+                msg += " (ya la tenías: actualizada)"
+            if len(col.tracks) >= spotify.EMBED_LIMIT and not self.cfg.spotify_client_id:
+                msg += ". Sin credenciales de API Spotify solo da las primeras 100"
+        else:
+            n = len(res.collections)
+            msg = f"{n} playlist{'s' if n != 1 else ''} de «{prof.name}» en la carpeta «{item.name}»"
+            if updated:
+                msg += f" ({updated} actualizadas)"
+            if res.failed:
+                msg += f". No se pudieron leer: {', '.join(res.failed)}"
+            if prof.total > len(prof.playlists):
+                msg += (f". Tiene {prof.total} públicas; sin credenciales de API solo se leen las "
+                        f"{len(prof.playlists)} primeras (mira el README)")
+        self.notify(msg, title="Importado de Spotify", timeout=10,
+                    severity="warning" if res.failed else "information")
