@@ -1,7 +1,7 @@
 //! Estado de la aplicación y lógica de reproducción (independiente del dibujo).
 
 use std::path::Path;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use crate::audio::{AudioEngine, Source, Spectrum};
@@ -11,9 +11,15 @@ use crate::library::{self, Library, PlaylistStore};
 use crate::models::Track;
 use crate::playqueue::{PlayQueue, Repeat};
 
+mod online;
+use online::Job;
+pub use online::Online;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Queue,
+    /// Resultados de YouTube/Spotify.
+    Search,
     Library,
 }
 
@@ -61,6 +67,11 @@ pub struct App {
     saved_version: u64,
     last_save: Instant,
     pub quit: bool,
+
+    /// YouTube y Spotify (ver `app/online.rs`).
+    pub online: Online,
+    job_tx: Sender<Job>,
+    job_rx: Receiver<Job>,
 }
 
 impl App {
@@ -81,6 +92,7 @@ impl App {
         }
         queue.repeat = Repeat::parse(&cfg.repeat);
         queue.set_shuffle(cfg.shuffle);
+        let (job_tx, job_rx) = channel();
         let mut app = App {
             library: Library::load(),
             playlists: PlaylistStore::load(),
@@ -106,9 +118,14 @@ impl App {
             xfade_uid: None,
             last_save: Instant::now(),
             quit: false,
+            online: Online::default(),
+            job_tx,
+            job_rx,
         };
         if app.queue.is_empty() && app.library.index.is_empty() && app.playlists.items.is_empty() {
-            app.notify("Pulsa / y escribe la ruta de tu carpeta de música (o arrástrala aquí)");
+            app.notify(
+                "Pulsa / y busca en YouTube, pega un enlace o la ruta de tu carpeta de música",
+            );
         }
         app.refresh_lib_tracks();
         app
@@ -146,7 +163,7 @@ impl App {
     }
 
     pub fn buffering(&self) -> bool {
-        self.engine.as_ref().is_some_and(|e| e.buffering())
+        self.online.resolving.is_some() || self.engine.as_ref().is_some_and(|e| e.buffering())
     }
 
     pub fn volume(&self) -> u8 {
@@ -230,6 +247,7 @@ impl App {
             };
             if t.is_local() {
                 self.xfade_uid = None;
+                self.online.resolving = None;
                 match self.engine.as_mut() {
                     Some(e) => e.play(
                         Source::file(t.path.as_deref().unwrap_or(""), t.duration),
@@ -243,10 +261,12 @@ impl App {
                 self.queue_sel = self.queue.index.max(0) as usize;
                 return;
             }
-            self.notify(format!(
-                "«{}» no es un archivo local: YouTube y Spotify llegarán en la fase 2",
-                t.title
-            ));
+            if t.url.is_some() || t.spotify_uri.is_some() {
+                self.play_remote(&t);
+                self.queue_sel = self.queue.index.max(0) as usize;
+                return;
+            }
+            self.notify(format!("«{}» ya no está en el disco", t.title));
             tries = tries.saturating_sub(1);
             if tries == 0 || self.queue.advance(false).is_none() {
                 if let Some(e) = self.engine.as_mut() {
@@ -490,14 +510,13 @@ impl App {
         } else if path.exists() {
             self.notify("Ese archivo no es de audio");
         } else {
-            self.notify(
-                "Buscar en YouTube y Spotify llegará en la fase 2; de momento, rutas locales",
-            );
+            self.submit_online(&text);
         }
     }
 
     // ---------------------------------------------------------------- tick
     pub fn tick(&mut self, viz_bands: usize) {
+        self.poll_jobs();
         if let Some(rx) = &self.scan_rx
             && let Ok((lib, n)) = rx.try_recv()
         {
