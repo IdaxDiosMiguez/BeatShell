@@ -74,6 +74,7 @@ class Config:
     mp3_quality: str = "0"
     concurrent_downloads: int = 2
     pixel_covers: bool = True
+    sidebar: str = "auto"  # auto (según el ancho) | show | hide — se cambia con Ctrl+B
     # Opcional: credenciales de la API de Spotify para playlists de más de 100 canciones.
     spotify_client_id: str = ""
     spotify_client_secret: str = ""
