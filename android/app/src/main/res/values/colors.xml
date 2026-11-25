@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bs_bg">#FFFFFF</color>
+    <color name="bs_icon_bg">#100D1A</color>
+    <color name="bs_pink">#FF4FD8</color>
+    <color name="bs_cyan">#5EE7FF</color>
+</resources>
