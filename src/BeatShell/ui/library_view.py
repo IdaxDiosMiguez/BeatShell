@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from rich.text import Text
-from textual import on, work
+from textual import work
 from textual.widgets import Input, Label, Tree
 
 from ..library import ALBUM, ARTIST, FOLDER, KIND_LABEL, PLAYLIST, export_m3u, import_m3u
@@ -105,8 +105,11 @@ class LibraryMixin:
             yield child
             yield from self._walk(child)
 
-    @on(Tree.NodeHighlighted, "#lib-tree")
-    def _lib_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+    # Ojo: los manejadores van por nombre (on_<mensaje>) y no con @on(...): Textual solo
+    # registra los @on de la propia clase App, no los de un mixin como este.
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        if event.control.id != "lib-tree":
+            return
         # Al reconstruir el árbol llegan eventos de nodos viejos: solo vale el del cursor.
         if event.node is not event.control.cursor_node:
             return
@@ -115,19 +118,34 @@ class LibraryMixin:
             self._lib_sel = data
             self._show_library_selection()
 
-    @on(Tree.NodeSelected, "#lib-tree")
-    def _lib_node_selected(self, event: Tree.NodeSelected) -> None:
-        # Las carpetas se abren/cierran solas; en lo demás, Enter salta a la lista.
-        if not event.node.children and self.query_one("#library-table", TrackTable).tracks:
-            self.query_one("#library-table").focus()
+    def on_library_tree_play(self, event: LibraryTree.Play) -> None:
+        """Enter / doble clic en el árbol: suena todo lo que hay en ese elemento, desde el principio."""
+        data = event.node.data
+        if not data:
+            return
+        if data != self._lib_sel:
+            self._lib_sel = data
+            self._show_library_selection()
+        tracks = self.query_one("#library-table", TrackTable).tracks  # respeta el filtro
+        item = self._sel_item
+        name = item.name if item is not None else "Archivos locales"
+        if not tracks:
+            msg = (f"Todavía estoy buscando canciones de {name}…"
+                   if item is not None and item.kind == ARTIST else f"«{name}» no tiene canciones")
+            self.notify(msg, timeout=3)
+            return
+        self.play_list(tracks, 0)
+        self.notify(f"Reproduciendo «{name}» · {len(tracks)} canciones", timeout=3)
 
-    @on(Tree.NodeExpanded, "#lib-tree")
-    def _lib_expanded_ev(self, event: Tree.NodeExpanded) -> None:
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        if event.control.id != "lib-tree":
+            return
         data = event.node.data
         self._lib_expanded.add("__local__" if data == ALL else (data[1] if data else ""))
 
-    @on(Tree.NodeCollapsed, "#lib-tree")
-    def _lib_collapsed_ev(self, event: Tree.NodeCollapsed) -> None:
+    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
+        if event.control.id != "lib-tree":
+            return
         data = event.node.data
         self._lib_expanded.discard("__local__" if data == ALL else (data[1] if data else ""))
 
@@ -198,13 +216,13 @@ class LibraryMixin:
         tbl.playing_key = self.queue.current.key if self.queue.current else None
         tbl.set_tracks(tracks, keep_cursor=False)
 
-    @on(Input.Changed, "#library-filter")
-    def _filter_changed(self, event: Input.Changed) -> None:
-        self._apply_library_filter()
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "library-filter":
+            self._apply_library_filter()
 
-    @on(Input.Submitted, "#library-filter")
-    def _filter_submit(self, event: Input.Submitted) -> None:
-        self.query_one("#library-table").focus()
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "library-filter":
+            self.query_one("#library-table").focus()
 
     def _refresh_library(self) -> None:
         self._refresh_library_tree()
