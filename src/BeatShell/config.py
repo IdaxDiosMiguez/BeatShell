@@ -75,6 +75,11 @@ class Config:
     concurrent_downloads: int = 2
     pixel_covers: bool = True
     sidebar: str = "auto"  # auto (según el ancho) | show | hide — se cambia con Ctrl+B
+    eq_preset: str = "Plano"
+    dj_mode: bool = False
+    dj_crossfade: float = 8.0  # segundos de fundido entre canciones en modo DJ
+    # auto: imagen real en Kitty/Ghostty, bloques en el resto · kitty: forzar · bloques: nunca
+    cover_renderer: str = "auto"
     # Opcional: credenciales de la API de Spotify para playlists de más de 100 canciones.
     spotify_client_id: str = ""
     spotify_client_secret: str = ""

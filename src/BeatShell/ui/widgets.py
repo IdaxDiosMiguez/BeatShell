@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-import time
 import unicodedata
 
 import numpy as np
@@ -15,7 +13,7 @@ from textual.color import Color
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import DataTable
+from textual.widgets import DataTable, Tree
 
 from .. import art
 from ..audio import spectrum_bands
@@ -67,10 +65,26 @@ class Logo(ThemeAware):
 
 
 # --------------------------------------------------------------- portada
-class CoverArt(ThemeAware):
-    """Portada en pixel art. La carga de la imagen ocurre en un hilo aparte."""
+class Graphics:
+    """Cómo se dibujan las portadas. Lo decide __main__ antes de arrancar Textual,
+    porque detectar el protocolo de Kitty exige preguntar a la terminal."""
 
-    DEFAULT_CSS = "CoverArt { width: 24; height: 12; }"
+    kitty = False
+
+
+class CoverArt(ThemeAware):
+    """Portada en pixel art.
+
+    En Kitty (y Ghostty) se muestra como imagen real con el protocolo gráfico: píxeles
+    grandes y nítidos. En el resto de terminales se dibuja con medios bloques ▀.
+    La carga de la imagen ocurre en un hilo aparte.
+    """
+
+    DEFAULT_CSS = """
+    CoverArt { width: 24; height: 12; }
+    CoverArt > #cover-img { display: none; }
+    """
+    KITTY_GRID = 32  # resolución de la portada pixelada en Kitty
 
     def __init__(self, **kw) -> None:
         super().__init__(**kw)
@@ -79,9 +93,19 @@ class CoverArt(ThemeAware):
         self._px = 0
         self._token = 0
         self.pixel_style = True
+        self._img = None
+
+    def compose(self):  # noqa: ANN201
+        if Graphics.kitty:
+            from textual_image.widget import TGPImage
+
+            self._img = TGPImage(id="cover-img")
+            yield self._img
 
     @property
     def px_size(self) -> int:
+        if self._img is not None:
+            return self.KITTY_GRID
         return max(4, min(self.size.width, self.size.height * 2))
 
     def set_track(self, track: Track | None) -> None:
@@ -89,8 +113,26 @@ class CoverArt(ThemeAware):
         self._load()
 
     def on_resize(self, event: events.Resize) -> None:
-        if self.px_size != self._px:
+        if self._img is not None:
+            self._fit_image()
+        elif self.px_size != self._px:
             self._load()
+
+    def _fit_image(self) -> None:
+        """Ajusta la imagen a un cuadrado según el tamaño real de las celdas."""
+        from textual_image._terminal import get_cell_size
+
+        cell = get_cell_size()
+        w, h = self.size.width, self.size.height
+        if not w or not h:
+            return
+        cols = max(1, round(h * cell.height / max(1, cell.width)))
+        rows = h
+        if cols > w:
+            cols, rows = w, max(1, round(w * cell.width / max(1, cell.height)))
+        self._img.styles.width = cols
+        self._img.styles.height = rows
+        self._img.styles.margin = ((h - rows) // 2, 0, 0, (w - cols) // 2)
 
     def _load(self) -> None:
         self._token += 1
@@ -98,27 +140,37 @@ class CoverArt(ThemeAware):
         self._px = size
         if track is None:
             self._pixels = None
+            if self._img is not None:
+                self._img.display = False
             self.refresh()
             return
         # Mientras carga mostramos el sprite generativo (instantáneo).
-        self._pixels = art.sprite_cover(f"{track.artist}|{track.album or track.title}", size)
-        self.refresh()
+        self._show(art.sprite_cover(f"{track.artist}|{track.album or track.title}", size))
         pixel = self.pixel_style
 
         def work() -> None:
-            px = art.cover_pixels(track, size, pixel)
+            px = art.cover_pixels(track, size, pixel or self._img is not None)
             self.app.call_from_thread(self._loaded, token, px)
 
         self.run_worker(work, thread=True, group="cover", exclusive=False)
 
     def _loaded(self, token: int, pixels: art.Pixels) -> None:
         if token == self._token:
-            self._pixels = pixels
-            self.refresh()
+            self._show(pixels)
+
+    def _show(self, pixels: art.Pixels) -> None:
+        self._pixels = pixels
+        if self._img is not None:
+            self._img.image = art.pixels_to_image(pixels, scale=16)
+            self._img.display = True
+            self._fit_image()
+        self.refresh()
 
     def render(self) -> Text:
         if self._pixels is None:
             return self._idle()
+        if self._img is not None:
+            return Text()
         text = art.render(self._pixels)
         pad = max(0, (self.size.width - self._px) // 2)
         if pad:
@@ -134,7 +186,7 @@ class CoverArt(ThemeAware):
 
     def _idle(self) -> Text:
         p = palette(self.app)
-        size = self.px_size
+        size = max(4, min(self.size.width, self.size.height * 2))
         # Un pequeño cassette pixelado cuando no suena nada.
         px: art.Pixels = [[None] * size for _ in range(size)]
         body = art.lerp(p["primary"], p["bg"], 0.55)
@@ -156,12 +208,30 @@ class CoverArt(ThemeAware):
                 for dx in (-1, 0, 1):
                     if 0 <= cy + dy < size and 0 <= cx + dx < size:
                         px[cy + dy][cx + dx] = hole if (dx or dy) else p["secondary"]
-        return art.render(px)
+        text = art.render(px)
+        pad = max(0, (self.size.width - size) // 2)
+        if not pad:
+            return text
+        out = Text()
+        lines = text.split("\n")
+        for i, ln in enumerate(lines):
+            out.append(" " * pad)
+            out.append_text(ln)
+            if i < len(lines) - 1:
+                out.append("\n")
+        return out
 
 
 # --------------------------------------------------------------- visualizador
+_EIGHTHS = " ▁▂▃▄▅▆▇█"
+
+
 class Visualizer(ThemeAware):
-    """Espectro en tiempo real (FFT de las muestras que suenan)."""
+    """Espectro en tiempo real (FFT de lo que suena).
+
+    Barras finas con resolución de 1/8 de celda y un degradado horizontal:
+    graves a la izquierda, agudos a la derecha.
+    """
 
     DEFAULT_CSS = "Visualizer { height: 1fr; min-height: 2; }"
 
@@ -169,76 +239,64 @@ class Visualizer(ThemeAware):
         super().__init__(**kw)
         self.engine = None
         self._levels = np.zeros(0, dtype=np.float32)
-        self._peaks = np.zeros(0, dtype=np.float32)
-        self._peak_t = np.zeros(0, dtype=np.float32)
-        self._colors: list[art.RGB] = []
-        self._phase = 0.0
+        self._colors: list[str] = []
+        self._dim = ""
 
     def on_theme_change(self) -> None:
         self._colors = []
         self.refresh()
 
     def _bars(self) -> int:
-        return max(1, (self.size.width + 1) // 3)
+        return max(1, (self.size.width + 1) // 2)
 
     def tick(self) -> None:
         n = self._bars()
         if len(self._levels) != n:
             self._levels = np.zeros(n, dtype=np.float32)
-            self._peaks = np.zeros(n, dtype=np.float32)
-            self._peak_t = np.zeros(n, dtype=np.float32)
+            self._colors = []
         eng = self.engine
         playing = eng is not None and eng.active and not eng.paused and not eng.buffering
         if playing:
             target = spectrum_bands(eng.viz_samples(), eng.samplerate, n)
         else:
             target = np.zeros(n, dtype=np.float32)
-        # Subida rápida, caída suave: así se siente "vivo" sin parpadeos.
+        # Subida rápida, caída suave: se siente vivo sin parpadear.
         up = target > self._levels
-        self._levels = np.where(up, self._levels * 0.35 + target * 0.65,
-                                self._levels * 0.82 + target * 0.18)
-        now = time.monotonic()
-        new_peak = self._levels >= self._peaks
-        self._peaks = np.where(new_peak, self._levels, self._peaks)
-        self._peak_t = np.where(new_peak, now, self._peak_t)
-        falling = (now - self._peak_t) > 0.35
-        self._peaks = np.where(falling, np.maximum(self._levels, self._peaks - 0.025), self._peaks)
-        self._phase += 0.08
-        self.refresh()
+        new = np.where(up, self._levels * 0.3 + target * 0.7, self._levels * 0.84 + target * 0.16)
+        if np.any(np.abs(new - self._levels) > 0.004) or np.any(new > 0.004):
+            self._levels = new
+            self.refresh()
 
     def render(self) -> Text:
         w, h = self.size.width, self.size.height
         if w <= 0 or h <= 0:
             return Text()
-        rows = h * 2
-        if len(self._colors) != rows:
+        n = len(self._levels)
+        if len(self._colors) != n:
             p = palette(self.app)
             stops = [p["secondary"], p["primary"], p["accent"]]
-            self._colors = [art.gradient(stops, (rows - 1 - y) / max(1, rows - 1)) for y in range(rows)]
-        p = palette(self.app)
-        px: art.Pixels = [[None] * w for _ in range(rows)]
-        n = len(self._levels)
-        idle = not np.any(self._levels > 0.02)
-        for i in range(min(n, (w + 1) // 3)):
-            x = i * 3
-            if idle:
-                # Onda tranquila cuando está en silencio.
-                hgt = 1 + int((math.sin(self._phase + i * 0.45) + 1) * 0.5 * 1.5)
-                peak = -1
-            else:
-                hgt = int(round(self._levels[i] * rows))
-                peak = int(round(self._peaks[i] * rows))
-            for y in range(rows - hgt, rows):
-                c = self._colors[y] if not idle else p["dim"]
-                px[y][x] = c
-                if x + 1 < w:
-                    px[y][x + 1] = c
-            if peak > hgt and 0 < peak <= rows:
-                y = rows - peak
-                px[y][x] = p["fg"]
-                if x + 1 < w:
-                    px[y][x + 1] = p["fg"]
-        return art.render(px)
+            self._colors = [art.hexc(art.gradient(stops, i / max(1, n - 1))) for i in range(n)]
+            self._dim = art.hexc(art.lerp(p["dim"], p["bg"], 0.4))
+        out = Text(no_wrap=True, overflow="crop")
+        for row in range(h):
+            floor = h - 1 - row  # filas por debajo de esta
+            for i in range(min(n, (w + 1) // 2)):
+                v = float(self._levels[i]) * h
+                fill = v - floor
+                if fill >= 1:
+                    ch, col = "█", self._colors[i]
+                elif fill > 0.06:
+                    ch, col = _EIGHTHS[max(1, int(fill * 8))], self._colors[i]
+                elif row == h - 1:
+                    ch, col = "▁", self._dim  # línea base discreta en silencio
+                else:
+                    ch, col = " ", self._dim
+                out.append(ch, col)
+                if i * 2 + 1 < w:
+                    out.append(" ")
+            if row < h - 1:
+                out.append("\n")
+        return out
 
 
 # --------------------------------------------------------------- barra de progreso
@@ -416,7 +474,7 @@ class TrackTable(DataTable):
         if action in ("remove", "move"):
             return self.context in ("queue", "playlist")
         if action in ("enqueue_all", "save_all", "download_all"):
-            return self.context in ("search", "library", "playlist", "queue")
+            return self.context in ("search", "library", "playlist", "queue", "collection")
         return True
 
     def _emit(self, action: str, arg: int = 0) -> None:
@@ -455,6 +513,20 @@ class TrackTable(DataTable):
         # Enter, o clic sobre la fila ya resaltada.
         event.stop()
         self._emit("play")
+
+
+class LibraryTree(Tree):
+    """Árbol de la biblioteca. Espacio sigue siendo reproducir/pausa."""
+
+    BINDINGS = [
+        Binding("space", "app.toggle_pause", "Play/Pausa", show=False),
+        Binding("left,right", "toggle_node", "Abrir/cerrar", show=False),
+    ]
+
+    def __init__(self, **kw) -> None:
+        super().__init__("Biblioteca", **kw)
+        self.show_root = False
+        self.guide_depth = 3
 
 
 class DownloadsTable(DataTable):

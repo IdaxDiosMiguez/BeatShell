@@ -25,7 +25,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from .. import art
+from .. import art, eq
 from ..audio import AudioEngine, AudioError
 from ..config import Config
 from ..library import (
@@ -41,37 +41,38 @@ from ..models import Track, fmt_time
 from ..playqueue import PlayQueue
 from ..services import FAILED, DownloadJob, Downloader, Resolver
 from ..sources import Collection, classify, spotify, youtube
-from .screens import NEW_PLAYLIST, Confirm, HelpScreen, PlaylistPicker, TextPrompt
+from .library_view import ALL, LibraryMixin
+from .screens import EqualizerScreen, HelpScreen, TextPrompt
 from .widgets import (
     CoverArt,
     DownloadsTable,
+    LibraryTree,
     Logo,
     SeekBar,
     TrackTable,
     Visualizer,
-    fold,
     palette,
 )
 
 THEMES = [
     Theme(
         name="beatshell", primary="#ff4fd8", secondary="#5ee7ff", accent="#ffd166",
-        foreground="#ece6ff", background="#0f0b1e", surface="#171230", panel="#221a44",
+        foreground="#ece6ff", background="#0f0b1e", surface="#161130", panel="#221a44",
         success="#7cf29a", warning="#ffd166", error="#ff5c7a", dark=True,
     ),
     Theme(
         name="beatshell-gameboy", primary="#9bbc0f", secondary="#8bac0f", accent="#e0f8d0",
-        foreground="#c4dc8c", background="#0f1f0f", surface="#173017", panel="#306230",
+        foreground="#c4dc8c", background="#0f1f0f", surface="#152a15", panel="#306230",
         success="#9bbc0f", warning="#e0f8d0", error="#f87858", dark=True,
     ),
     Theme(
         name="beatshell-sunset", primary="#ff8a3d", secondary="#ff4f6d", accent="#ffe066",
-        foreground="#fff1e0", background="#1a0f12", surface="#26151a", panel="#3a1e24",
+        foreground="#fff1e0", background="#1a0f12", surface="#24141a", panel="#3a1e24",
         success="#a7f070", warning="#ffe066", error="#ff4f6d", dark=True,
     ),
     Theme(
         name="beatshell-ice", primary="#5ab8ff", secondary="#a78bfa", accent="#7ff0d8",
-        foreground="#e6f1ff", background="#0a1020", surface="#111a30", panel="#1a2644",
+        foreground="#e6f1ff", background="#0a1020", surface="#10182c", panel="#1a2644",
         success="#7ff0d8", warning="#ffd27f", error="#ff7a90", dark=True,
     ),
 ]
@@ -80,17 +81,15 @@ VIEWS = [
     ("queue", "♫  Cola"),
     ("search", "⌕  Buscar"),
     ("library", "▤  Biblioteca"),
-    ("playlists", "☰  Playlists"),
     ("downloads", "⇩  Descargas"),
 ]
 
-ALL_FOLDERS = "__all__"
-
-
-def _two_lines(title: str, sub: str) -> Text:
-    t = Text(title)
-    t.append("\n  " + sub, style="dim")
-    return t
+# Acciones que solo tienen sentido en la vista Biblioteca
+LIBRARY_ACTIONS = {"add_folder", "rescan", "new_playlist", "new_folder", "move_item", "rename",
+                   "export_playlist", "import_playlist", "refresh_artist"}
+# Letras que, con una caja de texto enfocada, deben escribirse en vez de actuar
+TYPING_BLOCKED = {"toggle_pause", "next", "prev", "volume", "mute", "shuffle", "repeat",
+                  "cycle_theme", "focus_search", "equalizer", "toggle_dj"} | LIBRARY_ACTIONS
 
 
 def _bar(frac: float, color: str, width: int = 12) -> Text:
@@ -102,7 +101,7 @@ def _bar(frac: float, color: str, width: int = 12) -> Text:
     return t
 
 
-class BeatShellApp(App):
+class BeatShellApp(LibraryMixin, App):
     TITLE = "BeatShell"
     CSS_PATH = "beatshell.tcss"
     ENABLE_COMMAND_PALETTE = True
@@ -110,12 +109,14 @@ class BeatShellApp(App):
     BINDINGS = [
         Binding("space", "toggle_pause", "Play/Pausa", key_display="␣"),
         Binding("n", "next", "Siguiente"),
-        Binding("b", "prev", "Ant.", show=False),
+        Binding("b", "prev", "Anterior", show=False),
         Binding("plus,equals_sign", "volume(5)", "Volumen", key_display="+/−"),
         Binding("minus", "volume(-5)", "Vol−", key_display="−", show=False),
         Binding("m", "mute", "Silencio", show=False),
         Binding("s", "shuffle", "Aleatorio", show=False),
         Binding("r", "repeat", "Repetir", show=False),
+        Binding("E", "equalizer", "Ecualizador", show=False),
+        Binding("j", "toggle_dj", "Modo DJ", show=False),
         Binding("slash", "focus_search", "Buscar", key_display="/"),
         Binding("question_mark", "help", "Ayuda", key_display="?"),
         Binding("t", "cycle_theme", "Tema", show=False),
@@ -123,12 +124,16 @@ class BeatShellApp(App):
         Binding("1", "view('queue')", "Cola", show=False),
         Binding("2", "view('search')", "Buscar", show=False),
         Binding("3", "view('library')", "Biblioteca", show=False),
-        Binding("4", "view('playlists')", "Playlists", show=False),
-        Binding("5", "view('downloads')", "Descargas", show=False),
+        Binding("4", "view('downloads')", "Descargas", show=False),
         Binding("f", "add_folder", "Añadir carpeta", show=False),
         Binding("R", "rescan", "Re-escanear", show=False),
         Binding("N", "new_playlist", "Nueva playlist", show=False),
+        Binding("C", "new_folder", "Nueva carpeta", show=False),
+        Binding("M", "move_item", "Mover", show=False),
         Binding("e", "rename", "Renombrar", show=False),
+        Binding("U", "refresh_artist", "Actualizar artista", show=False),
+        Binding("ctrl+e", "export_playlist", "Exportar", show=False),
+        Binding("ctrl+o", "import_playlist", "Importar", show=False),
         Binding("ctrl+b", "toggle_sidebar", "Menú", key_display="^B", show=False),
         Binding("escape", "escape", show=False),
     ]
@@ -137,10 +142,12 @@ class BeatShellApp(App):
         super().__init__()
         self._initial = initial
         self.cfg = Config.load()
+        if self.cfg.eq_preset not in eq.PRESETS:
+            self.cfg.eq_preset = eq.DEFAULT
         self.library = Library()
         self.playlists = PlaylistStore()
         self.matches = MatchCache()
-        self.resolver = Resolver(self.matches)
+        self.resolver = Resolver(self.matches, self.library)
         self.queue = PlayQueue()
         self.queue.repeat = self.cfg.repeat
         self.queue.shuffle = self.cfg.shuffle
@@ -148,12 +155,10 @@ class BeatShellApp(App):
         self.engine_error: str | None = None
         try:
             self.engine = AudioEngine(volume=self.cfg.volume)
+            self.engine.set_filters(eq.filter_chain(self.cfg.eq_preset, self.cfg.dj_mode))
         except (AudioError, Exception) as exc:  # noqa: BLE001
             self.engine_error = str(exc)
-        self.downloader = Downloader(
-            self.cfg, self.resolver, self.library,
-            self._from_downloader,
-        )
+        self.downloader = Downloader(self.cfg, self.resolver, self.library, self._from_downloader)
         self._main_thread = threading.get_ident()
         self._load_token = 0
         self._loading: Track | None = None
@@ -163,14 +168,17 @@ class BeatShellApp(App):
         self._session_saved_version = -1
         self._session_saved_at = 0.0
         self._results: Collection | None = None
-        self._library_folder = ALL_FOLDERS
-        self._library_tracks: list[Track] = []
-        self._playlist_id: str | None = None
         self._last_status = ""
         self._groups: dict[str, list[str]] = {}
-        self._prefetch_key: str | None = None
         self._prefetch_timer = None
         self._sidebar_hint_shown = False
+        self._xfade_for = -1  # token de la pista que ya inició su fundido
+        self._radio_for: str | None = None
+        self._hq: tuple[int, object] | None = None  # (token, Source HQ) de la pista actual
+        self._hq_tries = 0
+        self._lib_sel = ALL
+        self._lib_tracks: list[Track] = []
+        self._lib_expanded: set[str] = {"__local__"}
 
     # ================================================================ layout
     def compose(self) -> ComposeResult:
@@ -198,17 +206,11 @@ class BeatShellApp(App):
                     yield Label("Biblioteca", id="library-header", classes="view-header")
                     yield Label("", id="library-hint", classes="view-hint")
                     with Horizontal(classes="split"):
-                        yield OptionList(id="folders", classes="side-list")
-                        with Vertical():
+                        yield LibraryTree(id="lib-tree", classes="side-list")
+                        with Vertical(id="lib-main"):
                             yield Input(placeholder="Filtrar por título, artista o álbum…",
                                         id="library-filter")
                             yield TrackTable("library", id="library-table")
-                with Vertical(id="playlists"):
-                    yield Label("Playlists", id="playlists-header", classes="view-header")
-                    yield Label("", id="playlists-hint", classes="view-hint")
-                    with Horizontal(classes="split"):
-                        yield OptionList(id="playlist-list", classes="side-list")
-                        yield TrackTable("playlist", id="playlist-table")
                 with Vertical(id="downloads"):
                     yield Label("Descargas", id="downloads-header", classes="view-header")
                     yield Label("", id="downloads-hint", classes="view-hint")
@@ -216,12 +218,16 @@ class BeatShellApp(App):
         with Horizontal(id="player"):
             yield CoverArt()
             with Vertical(id="player-main"):
-                yield Label("", id="now-title")
-                yield Label("", id="now-sub")
-                yield Label("", id="now-status")
+                with Horizontal(id="now"):
+                    with Vertical(id="now-text"):
+                        yield Label("", id="now-title")
+                        yield Label("", id="now-sub")
+                    yield Static("", id="now-badges")
                 yield Visualizer()
                 yield SeekBar()
-                yield Static("", id="controls")
+                with Horizontal(id="controls-row"):
+                    yield Static("", id="controls")
+                    yield Label("", id="now-status")
         yield Footer()
 
     # ================================================================ arranque
@@ -239,7 +245,7 @@ class BeatShellApp(App):
         dt.add_column("Progreso", key="bar", width=18)
         dt.add_column("Estado", key="state", width=28)
 
-        # La carpeta de descargas siempre es una biblioteca.
+        # La carpeta de descargas siempre está en la biblioteca.
         dl = Path(self.cfg.download_dir).expanduser()
         try:
             dl.mkdir(parents=True, exist_ok=True)
@@ -255,9 +261,7 @@ class BeatShellApp(App):
             self.queue.index = min(idx, len(tracks) - 1) if idx >= 0 else -1
 
         self._refresh_queue_view(force=True)
-        self._refresh_folders()
-        self._refresh_library_table()
-        self._refresh_playlists()
+        self._refresh_library()
         self._refresh_downloads_header()
         self._set_now(self.queue.current)
         self._update_controls()
@@ -318,6 +322,10 @@ class BeatShellApp(App):
                 seek.position = 0.0
                 seek.duration = self.queue.current.duration if self.queue.current else None
             self.query_one(Visualizer).tick()
+            if self.cfg.dj_mode:
+                self._dj_tick(eng)
+            if self._hq is not None and eng.is_fast and eng.upgrade_state != "pending":
+                self._try_upgrade()
             self._update_status()
         if self.queue.version != self._queue_version_seen:
             self._refresh_queue_view()
@@ -334,13 +342,15 @@ class BeatShellApp(App):
             pass
 
     # ================================================================ reproducción
-    def _start(self, track: Track | None) -> None:
+    def _start(self, track: Track | None, xfade: float = 0.0) -> None:
         self._load_token += 1
         token = self._load_token
         if self.engine is None:
             self.notify(self.engine_error or "Audio no disponible", severity="error")
             return
-        self.engine.stop()
+        if not (xfade > 0 and self.engine.active and not self.engine.paused):
+            xfade = 0.0
+            self.engine.stop()
         if track is None:
             self._loading = None
             self._set_now(None)
@@ -348,26 +358,59 @@ class BeatShellApp(App):
         self._loading = track
         self._set_now(track)
         self._refresh_marks(track)
-        self._load(track, token)
+        self._load(track, token, xfade)
 
     @work(thread=True, group="load")
-    def _load(self, track: Track, token: int) -> None:
+    def _load(self, track: Track, token: int, xfade: float) -> None:
         try:
             had_thumb = track.thumb
             src = self.resolver.resolve(track)
-            self.call_from_thread(self._loaded, track, token, src, had_thumb != track.thumb)
+            self.call_from_thread(self._loaded, track, token, src, had_thumb != track.thumb, xfade)
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._load_failed, track, token, str(exc))
 
-    def _loaded(self, track: Track, token: int, src, thumb_changed: bool) -> None:
+    def _loaded(self, track: Track, token: int, src, thumb_changed: bool, xfade: float) -> None:  # noqa: ANN001
         if token != self._load_token or self.engine is None:
             return
         self._loading = None
-        self.engine.play(src)
+        if xfade > 0 and self.engine.active:
+            self.engine.crossfade_to(src, xfade)
+        else:
+            self.engine.play(src)
+        self._hq, self._hq_tries = None, 0
+        if src.fast:
+            # Ya suena; en paralelo preparamos la alta calidad para cambiar sin cortes.
+            self._await_hq(track, token)
         if thumb_changed:
             self.query_one(CoverArt).set_track(track)
         self._set_now(track, cover=False)
         self.resolver.prefetch(self.queue.peek_next())
+
+    @work(thread=True, group="hq")
+    def _await_hq(self, track: Track, token: int) -> None:
+        try:
+            src = self.resolver.hq_source(track)
+        except Exception:  # noqa: BLE001 - seguimos con la calidad rápida
+            return
+        if src is not None:
+            self.call_from_thread(self._hq_ready, token, src)
+
+    def _hq_ready(self, token: int, src) -> None:  # noqa: ANN001
+        if token != self._load_token or self.engine is None:
+            return
+        self._hq = (token, src)
+        self._try_upgrade()
+
+    def _try_upgrade(self) -> None:
+        eng = self.engine
+        if eng is None or self._hq is None or self._hq[0] != self._load_token or not eng.is_fast:
+            return
+        if eng.crossfading or eng.buffering:
+            return  # se reintenta en el siguiente tick
+        if self._hq_tries >= 4:
+            return
+        self._hq_tries += 1
+        eng.upgrade(self._hq[1], lead=1.5 + self._hq_tries)
 
     def _load_failed(self, track: Track, token: int, error: str) -> None:
         if token != self._load_token:
@@ -382,8 +425,10 @@ class BeatShellApp(App):
             self._set_now(track, cover=False)
 
     def _on_track_end(self) -> None:
+        if self._loading is not None:
+            return  # ya está cargando la siguiente (p. ej. un fundido en marcha)
         eng = self.engine
-        if eng and eng.error and eng.position < 1:
+        if eng and eng.error:
             cur = self.queue.current
             self._load_failed(cur or Track(title="?"), self._load_token, eng.error)
             return
@@ -402,7 +447,7 @@ class BeatShellApp(App):
         idx = self.queue.insert_next([track])
         self._start(self.queue.jump(idx))
 
-    def enqueue(self, tracks: list[Track], next_: bool = False) -> None:
+    def enqueue(self, tracks: list[Track], next_: bool = False, quiet: bool = False) -> None:
         if not tracks:
             return
         idle = self._idle()
@@ -414,13 +459,94 @@ class BeatShellApp(App):
         if idle:
             start = len(self.queue.tracks) - len(tracks) if not next_ else max(0, self.queue.index + 1)
             self._start(self.queue.jump(start))
-            self.notify(f"Reproduciendo {what}", timeout=3)
+            if not quiet:
+                self.notify(f"Reproduciendo {what}", timeout=3)
         else:
-            self.notify(f"{what} {'a continuación' if next_ else 'añadida(s) a la cola'}", timeout=3)
+            if not quiet:
+                self.notify(f"{what} {'a continuación' if next_ else 'añadida(s) a la cola'}",
+                            timeout=3)
             self.resolver.prefetch(self.queue.peek_next())
 
     def _idle(self) -> bool:
         return self.engine is None or (not self.engine.active and self._loading is None)
+
+    # ----------------------------------------------------------- modo DJ
+    def _dj_tick(self, eng: AudioEngine) -> None:
+        cur = self.queue.current
+        if (cur is None or not eng.active or eng.paused or eng.crossfading
+                or self._loading is not None or eng.buffering):
+            return
+        dur, pos = eng.duration, eng.position
+        if not dur or dur < 30:
+            return
+        remaining = dur - pos
+        # Radio infinita: cuando se acaba la cola, añadimos canciones parecidas.
+        if remaining < 75 and self.queue.peek_next() is None and self._radio_for != cur.uid:
+            self._radio_for = cur.uid
+            self._fetch_radio(cur)
+        xf = min(float(self.cfg.dj_crossfade), dur / 4)
+        if remaining <= xf and self._xfade_for != self._load_token:
+            if self.queue.peek_next() is not None:
+                self._xfade_for = self._load_token
+                self._start(self.queue.advance(auto=True), xfade=max(1.0, remaining))
+
+    @work(thread=True, group="radio", exclusive=True)
+    def _fetch_radio(self, seed: Track) -> None:
+        try:
+            url = self.resolver.ensure_url(seed) if not seed.url else seed.url
+            vid = youtube.youtube_id(url) if url else None
+            if not vid:
+                found = youtube.search(seed.search_query, 1)
+                vid = youtube.youtube_id(found[0].url) if found else None
+            if not vid:
+                return
+            col = youtube.playlist(f"https://www.youtube.com/watch?v={vid}&list=RD{vid}")
+        except Exception:  # noqa: BLE001 - la radio es un extra: si falla, no molestamos
+            return
+        self.call_from_thread(self._radio_ready, col.tracks)
+
+    def _radio_ready(self, tracks: list[Track]) -> None:
+        known = {t.key for t in self.queue.tracks}
+        known_titles = {t.title.lower() for t in self.queue.tracks}
+        new = [t for t in tracks if t.key not in known and t.title.lower() not in known_titles
+               and t.duration and t.duration < 900][:10]
+        if new:
+            self.enqueue(new, quiet=True)
+            self.notify(f"Radio: {len(new)} canciones parecidas añadidas a la cola", title="Modo DJ",
+                        timeout=4)
+
+    def action_toggle_dj(self) -> None:
+        self.cfg.dj_mode = not self.cfg.dj_mode
+        self.cfg.save()
+        self._apply_filters()
+        self._update_controls()
+        if self.cfg.dj_mode:
+            self.notify(f"Fundidos de {self.cfg.dj_crossfade:.0f} s entre canciones, volumen nivelado "
+                        "y radio infinita cuando se acabe la cola.", title="◉ Modo DJ activado",
+                        timeout=5)
+        else:
+            self.notify("Modo DJ desactivado", timeout=2)
+
+    # ----------------------------------------------------------- ecualizador
+    def _apply_filters(self, preset: str | None = None) -> None:
+        if self.engine is not None:
+            self.engine.set_filters(eq.filter_chain(preset or self.cfg.eq_preset, self.cfg.dj_mode))
+
+    def action_equalizer(self) -> None:
+        previous = self.cfg.eq_preset
+
+        def preview(name: str) -> None:
+            self._apply_filters(name)
+
+        def done(name: str | None) -> None:
+            self.cfg.eq_preset = name or previous
+            self.cfg.save()
+            self._apply_filters()
+            self._update_controls()
+            if name:
+                self.notify(f"Ecualizador: {name}", timeout=2)
+
+        self.push_screen(EqualizerScreen(previous, preview), done)
 
     # ----------------------------------------------------------- acciones
     def action_toggle_pause(self) -> None:
@@ -437,7 +563,7 @@ class BeatShellApp(App):
     def action_next(self) -> None:
         nxt = self.queue.advance()
         if nxt is not None:
-            self._start(nxt)
+            self._start(nxt, xfade=2.5 if self.cfg.dj_mode else 0.0)
         else:
             self.notify("No hay más canciones en la cola", timeout=2)
 
@@ -449,14 +575,25 @@ class BeatShellApp(App):
         if prev is not None:
             self._start(prev)
 
+    def _seek_to(self, seconds: float) -> None:
+        eng = self.engine
+        if eng is None or not eng.active:
+            return
+        if eng.is_fast and self._hq is not None and self._hq[0] == self._load_token:
+            # Si la alta calidad ya está lista, el salto la estrena directamente.
+            dur = eng.duration
+            target = max(0.0, min(seconds, dur - 0.5) if dur else seconds)
+            eng.play(self._hq[1], start=target)
+            return
+        eng.seek(seconds)
+
     def action_seek(self, delta: float) -> None:
         if self.engine and self.engine.active:
-            self.engine.seek_relative(delta)
+            self._seek_to(self.engine.position + delta)
 
     @on(SeekBar.Seek)
     def _seek_click(self, event: SeekBar.Seek) -> None:
-        if self.engine and self.engine.active:
-            self.engine.seek(event.seconds)
+        self._seek_to(event.seconds)
 
     def action_volume(self, delta: int) -> None:
         if self.engine is None:
@@ -516,8 +653,7 @@ class BeatShellApp(App):
         inp.action_select_all()
 
     def action_escape(self) -> None:
-        focused = self.focused
-        if isinstance(focused, Input):
+        if isinstance(self.focused, Input):
             self._focus_view_table()
 
     def action_view(self, name: str) -> None:
@@ -525,32 +661,21 @@ class BeatShellApp(App):
         nav = self.query_one("#nav", OptionList)
         nav.highlighted = [k for k, _ in VIEWS].index(name)
         self._focus_view_table()
-        if name == "library":
-            self._refresh_library_table()
 
     def _focus_view_table(self) -> None:
         cur = self.query_one("#views", ContentSwitcher).current
-        target = {"queue": "#queue-table", "search": "#search-table", "library": "#library-table",
-                  "playlists": "#playlist-list", "downloads": "#downloads-table"}.get(cur or "queue")
-        if cur == "playlists" and self.query_one("#playlist-table", TrackTable).tracks:
-            target = "#playlist-table"
+        target = {"queue": "#queue-table", "search": "#search-table", "library": "#lib-tree",
+                  "downloads": "#downloads-table"}.get(cur or "queue")
         if target:
             self.query_one(target).focus()
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        # Con una caja de texto enfocada, las letras se escriben; solo interceptamos atajos.
-        if isinstance(self.focused, Input) and action not in ("escape", "quit", "help", "view"):
-            if action in ("toggle_pause", "next", "prev", "volume", "mute", "shuffle", "repeat",
-                          "cycle_theme", "focus_search", "add_folder", "rescan",
-                          "new_playlist", "rename"):
-                return False
-        view = self.query_one("#views", ContentSwitcher).current if self.is_mounted else None
-        if action in ("add_folder", "rescan"):
+        # Con una caja de texto enfocada, las letras se escriben; no son atajos.
+        if isinstance(self.focused, Input) and action in TYPING_BLOCKED:
+            return False
+        if action in LIBRARY_ACTIONS:
+            view = self.query_one("#views", ContentSwitcher).current if self.is_mounted else None
             return view == "library"
-        if action == "new_playlist":
-            return view == "playlists"
-        if action == "rename":
-            return view in ("library", "playlists")
         return True
 
     async def action_quit(self) -> None:
@@ -561,6 +686,12 @@ class BeatShellApp(App):
         self.downloader.shutdown()
         self.exit()
 
+    def on_key(self, event) -> None:  # noqa: ANN001
+        # 'x' sobre el árbol de la biblioteca quita el elemento seleccionado
+        if event.key in ("x", "delete") and self.focused is self.query_one("#lib-tree"):
+            event.stop()
+            self._delete_selected()
+
     # ================================================================ estado visual
     def _set_now(self, track: Track | None, cover: bool = True) -> None:
         title = self.query_one("#now-title", Label)
@@ -569,11 +700,11 @@ class BeatShellApp(App):
             title.update("Nada sonando")
             sub.update("Busca algo arriba ↑  o abre tu biblioteca (3)")
         else:
-            title.update(Text(track.title, style="bold"))
+            title.update(Text(track.title, style="bold", no_wrap=True, overflow="ellipsis"))
             bits = [track.display_artist]
             if track.album:
                 bits.append(track.album)
-            sub.update(" · ".join(bits))
+            sub.update(Text(" · ".join(bits), no_wrap=True, overflow="ellipsis"))
         if cover:
             self.query_one(CoverArt).set_track(track)
         self._update_status()
@@ -583,27 +714,27 @@ class BeatShellApp(App):
         if force:
             status = force
         elif self.engine_error:
-            status = "✖ Sin dispositivo de audio"
+            status = "✖ sin dispositivo de audio"
         elif self._loading is not None:
-            status = "◌ Buscando la canción…" if not self._loading.url and not self._loading.path \
-                else "◌ Cargando…"
+            status = "◌ buscando la canción…" if not self._loading.url and not self._loading.path \
+                else "◌ cargando…"
         elif eng is None or not eng.active:
-            status = "■ Detenido" if self.queue.current else ""
+            status = "■ detenido" if self.queue.current else ""
         elif eng.waiting > 0.2:
-            status = f"◌ YouTube pide esperar {eng.waiting:.0f} s antes de servir el audio…"
+            status = f"◌ YouTube pide esperar {eng.waiting:.0f} s…"
         elif eng.buffering:
-            status = "◌ Cargando…"
+            status = "◌ cargando…"
+        elif eng.crossfading:
+            status = "⇋ fundido"
         elif eng.paused:
-            status = "❚❚ En pausa"
+            status = "❚❚ en pausa"
         else:
-            status = "▶ Reproduciendo"
+            status = "▶ sonando"
         cur = self.queue.current
         if cur and status and not force:
-            src = "archivo local" if cur.is_local else ("YouTube" if cur.source != "spotify"
-                                                         else "Spotify → YouTube")
-            status = f"{status}   ·   {src}"
-            pos = self.queue.index + 1
-            status += f"   ·   {pos}/{len(self.queue)}"
+            src = "local" if cur.is_local else ("YouTube" if cur.source != "spotify"
+                                                else "Spotify → YouTube")
+            status = f"{status}  ·  {src}  ·  {self.queue.index + 1}/{len(self.queue)}"
         if status != self._last_status:
             self._last_status = status
             self.query_one("#now-status", Label).update(status)
@@ -621,31 +752,34 @@ class BeatShellApp(App):
         eng = self.engine
         playing = eng is not None and eng.active and not eng.paused
         vol = eng.volume if eng else 0
-        parts = [
-            ("◀◀", "prev", "bold"),
-            ("❚❚" if playing else " ▶", "toggle_pause", f"bold {on}"),
-            ("▶▶", "next", "bold"),
+        m = [
+            "[b][@click=app.prev] ◀◀ [/][/]",
+            f"[b {on}][@click=app.toggle_pause] {'❚❚' if playing else ' ▶'} [/][/]",
+            "[b][@click=app.next] ▶▶ [/][/]",
+            "    ",
+            f"[{on if self.queue.shuffle else off}][@click=app.shuffle]⇄[/][/]  ",
+            f"[{on if self.queue.repeat != 'off' else off}][@click=app.repeat]"
+            f"{'↻¹' if self.queue.repeat == 'one' else '↻'}[/][/]",
+            "    ",
         ]
-        markup = []
-        for label, action, style in parts:
-            markup.append(f"[{style}][@click=app.{action}] {label} [/][/]")
-        markup.append("   ")
-        markup.append(f"[{on if self.queue.shuffle else off}][@click=app.shuffle]⇄ aleatorio[/][/]")
-        markup.append("   ")
-        rep = {"off": "↻ repetir", "all": "↻ repetir todo", "one": "↻ repetir una"}[self.queue.repeat]
-        markup.append(f"[{on if self.queue.repeat != 'off' else off}][@click=app.repeat]{rep}[/][/]")
-        markup.append("   ")
-        bars = 10
+        bars = 8
         filled = int(round(vol / 100 * bars))
         mute = self._muted_volume is not None
-        markup.append("[@click=app.vol_down]◖[/] ")
-        markup.append(f"[{on}]{'▮' * filled}[/][{off}]{'▯' * (bars - filled)}[/]")
-        markup.append(f" [@click=app.vol_up]◗[/]  {'silencio' if mute else f'{vol}%'}")
-        self.query_one("#controls", Static).update("".join(markup))
+        m.append("[@click=app.vol_down]－[/] ")
+        m.append(f"[{on}]{'▮' * filled}[/][{off}]{'▯' * (bars - filled)}[/]")
+        m.append(f" [@click=app.vol_up]＋[/] [{off}]{'mute' if mute else f'{vol}%'}[/]")
+        self.query_one("#controls", Static).update("".join(m))
+
+        eq_on = self.cfg.eq_preset != eq.DEFAULT
+        badges = (
+            f"[{on if eq_on else off}][@click=app.equalizer] ≋ EQ {self.cfg.eq_preset} [/][/]"
+            f"  [{on if self.cfg.dj_mode else off}][@click=app.toggle_dj] ◉ DJ [/][/]"
+        )
+        self.query_one("#now-badges", Static).update(badges)
 
     def _refresh_marks(self, track: Track | None) -> None:
         key = track.key if track else None
-        for tid in ("#search-table", "#library-table", "#playlist-table"):
+        for tid in ("#search-table", "#library-table"):
             tbl = self.query_one(tid, TrackTable)
             if tbl.playing_key != key:
                 tbl.playing_key = key
@@ -656,7 +790,7 @@ class BeatShellApp(App):
         lines = [
             f"♫ {len(self.queue)} en cola",
             f"▤ {self.library.count()} locales",
-            f"☰ {len(self.playlists.items)} playlists",
+            f"☰ {len(self.playlists.items)} guardados",
         ]
         if active:
             lines.append(f"⇩ {active} descargando")
@@ -667,8 +801,6 @@ class BeatShellApp(App):
     def _nav_highlight(self, event: OptionList.OptionHighlighted) -> None:
         if event.option.id:
             self.query_one("#views", ContentSwitcher).current = event.option.id
-            if event.option.id == "library":
-                self._refresh_library_table()
 
     @on(OptionList.OptionSelected, "#nav")
     def _nav_select(self, event: OptionList.OptionSelected) -> None:
@@ -686,11 +818,11 @@ class BeatShellApp(App):
         total = sum(t.duration or 0 for t in self.queue.tracks)
         n = len(self.queue)
         self.query_one("#queue-header", Label).update(
-            f"♫ Cola de reproducción   {n} canci{'ón' if n == 1 else 'ones'} · {fmt_time(total)}"
-            if n else "♫ Cola de reproducción")
+            f"♫ Cola   {n} canci{'ón' if n == 1 else 'ones'} · {fmt_time(total)}"
+            if n else "♫ Cola")
         self.query_one("#queue-hint", Label).update(
-            "Enter reproducir · x quitar · Mayús+↑↓ mover · G guardar como playlist · D descargar todo"
-            if n else "La cola está vacía. Busca algo con / o elige canciones de tu biblioteca.")
+            "Enter reproducir · x quitar · Mayús↑↓ mover · G guardar como playlist · D descargar todo"
+            if n else "La cola está vacía. Busca algo con / o elige canciones de tu biblioteca (3).")
         self._update_sidebar_stats()
         self._update_status()
 
@@ -710,6 +842,9 @@ class BeatShellApp(App):
             path = Path(candidate).expanduser()
             if path.is_dir():
                 self._add_folder(str(path))
+                return True
+            if path.is_file() and path.suffix.lower() in (".m3u", ".m3u8"):
+                self._import_playlist(str(path))
                 return True
             if path.is_file() and path.suffix.lower() in AUDIO_EXTS:
                 self.enqueue([track_from_file(path)])
@@ -767,7 +902,7 @@ class BeatShellApp(App):
                 raise RuntimeError("No tiene canciones disponibles")
             if ref.startswith("track:"):
                 # Una canción suelta se comporta como un enlace de YouTube: suena o va a la cola.
-                self.call_from_thread(self._single_link_done, col.tracks[0])
+                self.call_from_thread(self.enqueue, [col.tracks[0]])
                 return
             self.call_from_thread(self._show_results, col, False)
         except Exception as exc:  # noqa: BLE001
@@ -780,9 +915,6 @@ class BeatShellApp(App):
             self.call_from_thread(self.enqueue, [t])
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self.notify, str(exc), title="No se pudo abrir", severity="error")
-
-    def _single_link_done(self, track: Track) -> None:
-        self.enqueue([track])
 
     def _search_failed(self, error: str) -> None:
         self._hide_loading()
@@ -799,20 +931,21 @@ class BeatShellApp(App):
         tbl.refresh_marks()
         n = len(col.tracks)
         if col.kind == "search":
-            header = f"⌕ Resultados para «{col.name}»   {n} vídeos de YouTube"
-            hint = ("Enter reproducir · a añadir a la cola · i a continuación · "
-                    "g guardar en playlist · d descargar MP3")
+            header = f"⌕ «{col.name}»   {n} resultados de YouTube"
+            hint = ("Enter reproducir · a cola · i a continuación · "
+                    "g guardar (playlist, álbum o artista) · d descargar MP3")
         else:
             icon = "●" if col.source == "spotify" else "▶"
             src = "Spotify" if col.source == "spotify" else "YouTube"
             kind = "Álbum" if col.kind == "album" else "Playlist"
             dur = sum(t.duration or 0 for t in col.tracks)
-            header = f"{icon} {kind} de {src}: {col.name}"
+            header = f"{icon} {kind} de {src} · {col.name}"
             if col.owner:
                 header += f" — {col.owner}"
             header += f"   {n} canciones · {fmt_time(dur)}"
-            hint = ("Enter reproducir desde aquí · A añadir todo a la cola · "
-                    "G guardar como playlist · D descargar todo en MP3")
+            hint = (f"Enter reproducir desde aquí · A todo a la cola · "
+                    f"G guardar {'el álbum' if col.kind == 'album' else 'la playlist'} "
+                    "en tu biblioteca · D descargar todo en MP3")
             if (col.source == "spotify" and n >= spotify.EMBED_LIMIT
                     and not self.cfg.spotify_client_id):
                 self.notify("Spotify solo muestra las primeras 100 canciones sin credenciales de API. "
@@ -824,20 +957,23 @@ class BeatShellApp(App):
             tbl.focus()
         if quick and col.tracks:
             self.enqueue([col.tracks[0]])
-        elif col.tracks:
-            # Pre-resolvemos el primer resultado: suele ser el que se elige.
-            self.resolver.prefetch(col.tracks[0])
+        else:
+            # Pre-resolvemos los primeros resultados: suelen ser los que se eligen.
+            for t in col.tracks[:3]:
+                self.resolver.prefetch(t)
 
-    @on(DataTable.RowHighlighted, "#search-table")
-    def _search_highlight(self, event: DataTable.RowHighlighted) -> None:
-        # Al detenerse sobre un resultado, lo preparamos para que empiece al instante.
-        tbl = self.query_one("#search-table", TrackTable)
+    @on(DataTable.RowHighlighted)
+    def _row_highlight(self, event: DataTable.RowHighlighted) -> None:
+        # Al detenerse sobre una canción de internet, la preparamos para que empiece al instante.
+        tbl = event.data_table
+        if not isinstance(tbl, TrackTable):
+            return
         t = tbl.selected
-        if t is None or self._results is None:
+        if t is None or t.is_local:
             return
         if self._prefetch_timer is not None:
             self._prefetch_timer.stop()
-        self._prefetch_timer = self.set_timer(0.7, lambda: self.resolver.prefetch(t))
+        self._prefetch_timer = self.set_timer(0.35, lambda: self.resolver.prefetch(t))
 
     # ================================================================ acciones de tabla
     @on(TrackTable.Action)
@@ -848,6 +984,7 @@ class BeatShellApp(App):
             return
         track = tracks[i]
         ctx = tbl.context
+        item = self._sel_item if tbl.id == "library-table" else None
         if act == "play":
             if ctx == "queue":
                 self._start(self.queue.jump(i))
@@ -862,7 +999,7 @@ class BeatShellApp(App):
         elif act == "enqueue_all":
             self.enqueue(tracks)
         elif act == "save":
-            self._save_to_playlist([track], f"«{track.title}»")
+            self._open_save_menu([track], f"«{track.title}»", single=track)
         elif act == "save_all":
             self._save_all(tbl)
         elif act == "download":
@@ -875,240 +1012,48 @@ class BeatShellApp(App):
                 self.queue.remove(i)
                 if was_current:
                     self.action_next() if self.queue.peek_next() else self._start(None)
-            elif ctx == "playlist" and self._playlist_id:
-                self.playlists.remove(self._playlist_id, track.uid)
-                self._show_playlist(self._playlist_id)
-                self._refresh_playlists(keep=True)
+            elif ctx == "playlist" and item is not None:
+                self.playlists.remove(item.id, track.uid)
+                self._refresh_library()
         elif act == "move":
             if ctx == "queue":
                 j = self.queue.move(i, event.arg)
                 self._refresh_queue_view(force=True)
                 tbl.move_cursor(row=j)
-            elif ctx == "playlist" and self._playlist_id:
-                j = self.playlists.move(self._playlist_id, i, event.arg)
-                self._show_playlist(self._playlist_id)
+            elif ctx == "playlist" and item is not None:
+                j = self.playlists.move(item.id, i, event.arg)
+                self._show_library_selection()
                 tbl.move_cursor(row=j)
 
     def _group_for(self, tbl: TrackTable) -> str | None:
-        if tbl.context == "playlist" and self._playlist_id:
-            p = self.playlists.get(self._playlist_id)
-            return p.name if p else None
+        if tbl.id == "library-table" and (item := self._sel_item) is not None:
+            return item.name
         if tbl.context == "search" and self._results and self._results.kind != "search":
             return self._results.name
         return None
-
-    # ================================================================ playlists
-    def _save_to_playlist(self, tracks: list[Track], what: str) -> None:
-        def chosen(pid: str | None) -> None:
-            if pid is None:
-                return
-            if pid == NEW_PLAYLIST:
-                def named(name: str | None) -> None:
-                    if name:
-                        p = self.playlists.create(name, tracks)
-                        self.notify(f"Playlist «{p.name}» creada con {len(tracks)} canción(es)")
-                        self._refresh_playlists(keep=True)
-                self.push_screen(TextPrompt("Nombre de la nueva playlist", "Mi playlist"), named)
-                return
-            n = self.playlists.add(pid, tracks)
-            p = self.playlists.get(pid)
-            self.notify(f"{n} canción(es) añadidas a «{p.name if p else ''}»", timeout=3)
-            self._refresh_playlists(keep=True)
-            if self._playlist_id == pid:
-                self._show_playlist(pid)
-
-        self.push_screen(PlaylistPicker(self.playlists.items, what), chosen)
 
     def _save_all(self, tbl: TrackTable) -> None:
         tracks = tbl.tracks
         if tbl.context == "search" and self._results and self._results.kind != "search":
             col = self._results
-            existing = next((p for p in self.playlists.items
-                             if col.url and p.source_url == col.url), None)
-            if existing:
-                self.notify(f"Ya la tienes guardada como «{existing.name}»", timeout=4)
-                return
-            p = self.playlists.create(col.name, tracks, source_url=col.url)
-            self.notify(f"Guardada como playlist «{p.name}» ({len(tracks)} canciones)")
-            self._refresh_playlists(keep=True)
+            before = len(self.playlists.items)
+            p = self._save_collection(col)
+            if len(self.playlists.items) == before:
+                self.notify(f"Ya está en tu biblioteca como «{p.name}»", timeout=4)
+            else:
+                kind = "Álbum" if col.kind == "album" else "Playlist"
+                self.notify(f"{kind} «{p.name}» guardado en tu biblioteca ({len(tracks)} canciones)")
             return
         what = "la cola" if tbl.context == "queue" else f"{len(tracks)} canciones"
-        self._save_to_playlist(tracks, what)
+        self._open_save_menu(tracks, what)
 
-    def _refresh_playlists(self, keep: bool = False) -> None:
-        ol = self.query_one("#playlist-list", OptionList)
-        prev = ol.highlighted
-        ol.clear_options()
-        for p in self.playlists.items:
-            n = len(p.tracks)
-            local = sum(1 for t in p.tracks if t.is_local)
-            badge = " ⇩" if n and local == n else ""
-            ol.add_option(Option(_two_lines(f"☰ {p.name}",
-                                            f"{n} canciones · {fmt_time(p.duration)}{badge}"),
-                                 id=p.id))
-        if self.playlists.items:
-            idx = prev if keep and prev is not None else 0
-            ol.highlighted = min(idx, len(self.playlists.items) - 1)
-        else:
-            self._playlist_id = None
-            self.query_one("#playlist-table", TrackTable).set_tracks([])
-        hdr = self.query_one("#playlists-header", Label)
-        hdr.update(f"☰ Playlists   {len(self.playlists.items)}")
-        self.query_one("#playlists-hint", Label).update(
-            "N nueva · e renombrar · x borrar playlist · D descargar en MP3 · "
-            "Guarda canciones desde cualquier lista con g"
-            if self.playlists.items else
-            "Aún no tienes playlists. Pulsa N para crear una, o pega un enlace de una playlist "
-            "de YouTube/Spotify arriba y pulsa G.")
-        self._update_sidebar_stats()
-
-    @on(OptionList.OptionHighlighted, "#playlist-list")
-    def _playlist_highlight(self, event: OptionList.OptionHighlighted) -> None:
-        if event.option.id:
-            self._show_playlist(event.option.id)
-
-    @on(OptionList.OptionSelected, "#playlist-list")
-    def _playlist_select(self, event: OptionList.OptionSelected) -> None:
-        tbl = self.query_one("#playlist-table", TrackTable)
-        if tbl.tracks:
-            tbl.focus()
-
-    def _show_playlist(self, pid: str) -> None:
-        self._playlist_id = pid
-        p = self.playlists.get(pid)
-        tbl = self.query_one("#playlist-table", TrackTable)
-        tbl.playing_key = self.queue.current.key if self.queue.current else None
-        tbl.set_tracks(p.tracks if p else [])
-
-    def action_new_playlist(self) -> None:
-        def named(name: str | None) -> None:
-            if name:
-                p = self.playlists.create(name)
-                self._refresh_playlists()
-                ol = self.query_one("#playlist-list", OptionList)
-                ol.highlighted = len(self.playlists.items) - 1
-                self.notify(f"Playlist «{p.name}» creada. Añade canciones con g desde cualquier lista.")
-        self.push_screen(TextPrompt("Nueva playlist", "Nombre"), named)
-
-    def action_rename(self) -> None:
-        view = self.query_one("#views", ContentSwitcher).current
-        if view == "playlists" and self._playlist_id:
-            p = self.playlists.get(self._playlist_id)
-            if not p:
-                return
-
-            def done(name: str | None) -> None:
-                if name:
-                    self.playlists.rename(p.id, name)
-                    self._refresh_playlists(keep=True)
-            self.push_screen(TextPrompt("Renombrar playlist", value=p.name), done)
-        elif view == "library" and self._library_folder != ALL_FOLDERS:
-            f = self.library.folder(self._library_folder)
-            if not f:
-                return
-
-            def done2(name: str | None) -> None:
-                if name:
-                    self.library.rename_folder(f.id, name)
-                    self._refresh_folders(keep=True)
-            self.push_screen(TextPrompt("Renombrar biblioteca", value=f.name), done2)
-
-    def on_key(self, event) -> None:  # noqa: ANN001
-        # 'x' sobre las listas laterales borra la playlist / biblioteca seleccionada
-        if event.key not in ("x", "delete"):
-            return
-        focused = self.focused
-        if focused is self.query_one("#playlist-list") and self._playlist_id:
-            p = self.playlists.get(self._playlist_id)
-            if p:
-                event.stop()
-
-                def ok(yes: bool) -> None:
-                    if yes:
-                        self.playlists.delete(p.id)
-                        self._refresh_playlists()
-                        self.notify(f"Playlist «{p.name}» eliminada")
-                self.push_screen(Confirm(f"¿Borrar la playlist «{p.name}»?",
-                                         "Los archivos descargados no se borran.", "Borrar"), ok)
-        elif focused is self.query_one("#folders") and self._library_folder != ALL_FOLDERS:
-            f = self.library.folder(self._library_folder)
-            if f:
-                event.stop()
-
-                def ok2(yes: bool) -> None:
-                    if yes:
-                        self.library.remove_folder(f.id)
-                        self._library_folder = ALL_FOLDERS
-                        self._refresh_folders()
-                        self._refresh_library_table()
-                self.push_screen(Confirm(f"¿Quitar la biblioteca «{f.name}»?",
-                                         f"Solo se deja de mostrar; no se borra nada de {f.path}",
-                                         "Quitar"), ok2)
-
-    # ================================================================ biblioteca
-    def _refresh_folders(self, keep: bool = False) -> None:
-        ol = self.query_one("#folders", OptionList)
-        prev = ol.highlighted
-        ol.clear_options()
-        ol.add_option(Option(_two_lines("▤ Todas las canciones", f"{self.library.count()} canciones"),
-                             id=ALL_FOLDERS))
-        for f in self.library.folders:
-            path = f.path if len(f.path) <= 24 else "…" + f.path[-23:]
-            ol.add_option(Option(_two_lines(f"▸ {f.name}", f"{self.library.count(f.id)} · {path}"),
-                                 id=f.id))
-        ol.highlighted = prev if keep and prev is not None and prev < ol.option_count else 0
-
-    @on(OptionList.OptionHighlighted, "#folders")
-    def _folder_highlight(self, event: OptionList.OptionHighlighted) -> None:
-        if event.option.id and event.option.id != self._library_folder:
-            self._library_folder = event.option.id
-            self._refresh_library_table()
-
-    @on(OptionList.OptionSelected, "#folders")
-    def _folder_select(self, event: OptionList.OptionSelected) -> None:
-        self.query_one("#library-table").focus()
-
-    @on(Input.Changed, "#library-filter")
-    def _filter_changed(self, event: Input.Changed) -> None:
-        self._apply_library_filter()
-
-    @on(Input.Submitted, "#library-filter")
-    def _filter_submit(self, event: Input.Submitted) -> None:
-        self.query_one("#library-table").focus()
-
-    def _refresh_library_table(self) -> None:
-        fid = None if self._library_folder == ALL_FOLDERS else self._library_folder
-        self._library_tracks = self.library.tracks(fid)
-        self._apply_library_filter()
-
-    def _apply_library_filter(self) -> None:
-        q = fold(self.query_one("#library-filter", Input).value.strip())
-        tracks = self._library_tracks
-        if q:
-            words = q.split()
-            tracks = [t for t in tracks
-                      if all(w in fold(f"{t.title} {t.artist} {t.album}") for w in words)]
-        tbl = self.query_one("#library-table", TrackTable)
-        tbl.playing_key = self.queue.current.key if self.queue.current else None
-        tbl.set_tracks(tracks, keep_cursor=False)
-        total = len(self._library_tracks)
-        name = "Todas las canciones"
-        if self._library_folder != ALL_FOLDERS and (f := self.library.folder(self._library_folder)):
-            name = f.name
-        shown = f"{len(tracks)} de {total}" if q else f"{total}"
-        self.query_one("#library-header", Label).update(f"▤ Biblioteca · {name}   {shown} canciones")
-        self.query_one("#library-hint", Label).update(
-            "Enter reproducir · a añadir a la cola · g guardar en playlist · "
-            "f añadir carpeta · R re-escanear · e renombrar"
-            if total or self.library.folders else
-            "Pulsa f para añadir una carpeta con música (o pega/arrastra su ruta en la barra de arriba).")
-
+    # ================================================================ biblioteca local
     def action_add_folder(self) -> None:
         def chosen(path: str | None) -> None:
             if path:
                 self._add_folder(path)
         self.push_screen(TextPrompt(
-            "Añadir carpeta a la biblioteca", "/ruta/a/tu/música",
+            "Añadir carpeta de música", "/ruta/a/tu/música",
             hint="Consejo: puedes arrastrar la carpeta a la terminal para pegar su ruta."), chosen)
 
     def _add_folder(self, path: str) -> None:
@@ -1117,10 +1062,11 @@ class BeatShellApp(App):
             self.notify(f"No existe la carpeta {p}", severity="error")
             return
         f = self.library.add_folder(str(p))
-        self.notify(f"Biblioteca «{f.name}» añadida. Escaneando…")
-        self._library_folder = f.id
-        self._refresh_folders()
+        self.notify(f"«{f.name}» añadida a la biblioteca. Escaneando…")
+        self._lib_sel = ("dir", f.id)
+        self._lib_expanded.add("__local__")
         self.action_view("library")
+        self._refresh_library()
         self._scan_library()
 
     def action_rescan(self) -> None:
@@ -1140,8 +1086,7 @@ class BeatShellApp(App):
         self.call_from_thread(self._scan_done, n)
 
     def _scan_done(self, n: int) -> None:
-        self._refresh_folders(keep=True)
-        self._refresh_library_table()
+        self._refresh_library()
         self._update_sidebar_stats()
 
     # ================================================================ descargas
@@ -1162,16 +1107,10 @@ class BeatShellApp(App):
         tracks = tbl.tracks
         group = self._group_for(tbl)
         if tbl.context == "search" and self._results and self._results.kind != "search":
-            # Una playlist importada que se descarga se guarda también como playlist,
+            # Una playlist/álbum que se descarga se guarda también en la biblioteca,
             # y sus canciones pasan a apuntar a los MP3 cuando terminan.
-            col = self._results
-            existing = next((p for p in self.playlists.items
-                             if col.url and p.source_url == col.url), None)
-            if existing is None:
-                existing = self.playlists.create(col.name, tracks, source_url=col.url)
-                self._refresh_playlists(keep=True)
-                self.notify(f"Guardada también como playlist «{existing.name}»", timeout=4)
-            group = existing.name
+            p = self._save_collection(self._results)
+            group = p.name
         elif tbl.context == "queue":
             group = None
         self._download(tracks, group)
@@ -1197,12 +1136,8 @@ class BeatShellApp(App):
             dt.add_row(*cells, key=job.id)
         if job.finished and job.path:
             self.playlists.link_local(job.key, job.path)
-            if self._playlist_id:
-                self._show_playlist(self._playlist_id)
         if job.finished:
             self._check_group_done(job.group)
-            if self.query_one("#views", ContentSwitcher).current == "library":
-                self._refresh_library_table()
         self._refresh_downloads_header()
         self._update_sidebar_stats()
 
@@ -1216,11 +1151,10 @@ class BeatShellApp(App):
             bad = len(jobs) - ok
             msg = f"«{group}»: {ok} canciones listas"
             if bad:
-                msg += f", {bad} con error (pulsa 5 para verlas)"
+                msg += f", {bad} con error (pulsa 4 para verlas)"
             self.notify(msg, title="Descarga terminada", severity="warning" if bad else "information",
                         timeout=8)
-            self._refresh_folders(keep=True)
-            self._refresh_playlists(keep=True)
+            self._refresh_library()
             del self._groups[group]
 
     def action_clear_downloads(self) -> None:
@@ -1259,6 +1193,6 @@ class BeatShellApp(App):
         self.query_one("#downloads-header", Label).update(
             f"⇩ Descargas   {active} activas · {done} listas" + (f" · {failed} con error" if failed else ""))
         self.query_one("#downloads-hint", Label).update(
-            f"Se guardan en {self.cfg.download_dir} · MP3 "
+            f"{self.cfg.download_dir} · MP3 "
             f"{'V0 (~245 kbps)' if self.cfg.mp3_quality == '0' else self.cfg.mp3_quality + ' kbps'}"
-            " con portada y etiquetas · d sobre cualquier canción para descargarla")
+            " con portada · c limpiar · y reintentar · o abrir carpeta")
