@@ -67,13 +67,28 @@ class _SilentLogger:
         pass
 
 
+# Instancias de yt-dlp reutilizables (conexiones abiertas, caché del reproductor de YouTube).
+# yt-dlp no es seguro entre hilos: cada instancia la usa un hilo a la vez.
+_POOL: dict[str, list[yt_dlp.YoutubeDL]] = {}
+_POOL_LOCK = threading.Lock()
+
+
 def _extract(url: str, **opts: Any) -> dict[str, Any]:
+    key = repr(sorted(opts.items()))
+    with _POOL_LOCK:
+        idle = _POOL.setdefault(key, [])
+        ydl = idle.pop() if idle else None
+    if ydl is None:
+        ydl = yt_dlp.YoutubeDL(base_opts(**opts))
     try:
-        with yt_dlp.YoutubeDL(base_opts(**opts)) as ydl:
-            info = ydl.extract_info(url, download=False)
+        info = ydl.extract_info(url, download=False)
     except yt_dlp.utils.DownloadError as exc:
         msg = re.sub(r"^ERROR:\s*(\[[^\]]+\]\s*)?", "", str(exc))
         raise YouTubeError(msg.split("\n")[0][:240]) from None
+    finally:
+        with _POOL_LOCK:
+            if len(_POOL[key]) < 4:
+                _POOL[key].append(ydl)
     if not info:
         raise YouTubeError("YouTube no devolvió resultados")
     return info

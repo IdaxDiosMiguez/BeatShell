@@ -146,6 +146,7 @@ Los botones del reproductor (◀◀ ▶ ▶▶, aleatorio, repetir, volumen) tam
 | `eq_preset` | Preset del ecualizador (se cambia con `E`) |
 | `dj_mode` / `dj_crossfade` | Modo DJ y segundos de fundido entre canciones (8 por defecto) |
 | `cover_renderer` | `"auto"` (imagen real en Kitty/Ghostty), `"kitty"` (forzar) o `"bloques"` (nunca) |
+| `visualizer` | `false` para ocultar el visualizador y gastar aún menos CPU |
 | `spotify_client_id` / `spotify_client_secret` | Opcional, ver abajo |
 
 ### Playlists de Spotify de más de 100 canciones
@@ -161,6 +162,9 @@ playlists completas, crea una app gratuita en <https://developer.spotify.com/das
   la alta calidad está lista, cambia en mitad de la canción sin que se note. Además precarga la siguiente
   de la cola y la canción sobre la que te detienes en cualquier lista.
 - Las canciones que ya descargaste suenan siempre desde el disco, las abras desde donde las abras.
+- **Sin cortes**: el audio corre en su propio proceso, así que por mucho que uses la interfaz nunca se
+  queda sin datos. Entre canciones no hay silencio: la siguiente se prepara antes de que acabe la actual.
+- El instalador deja BeatShell enlazado a esta carpeta: tras un `git pull` no hace falta reinstalar.
 - Si YouTube deja de funcionar, casi siempre se arregla actualizando yt-dlp:
   `.venv/bin/pip install -U "yt-dlp[default]"` (en Windows `.venv\Scripts\pip ...`).
 - Los colores se ven mejor en terminales con *true color*: Windows Terminal, iTerm2, WezTerm, Kitty,
@@ -183,7 +187,8 @@ playlists completas, crea una app gratuita en <https://developer.spotify.com/das
 
 ```
 src/BeatShell/
-├── audio.py        motor de audio: dos voces (fundidos, cambio a HQ), espectro
+├── audio.py        motor de audio: voces (fundidos, cambio a HQ, empalme sin huecos), espectro
+├── audio_process.py el motor en un proceso aparte (sin cortes) y su proxy
 ├── eq.py           presets del ecualizador y nivelado del modo DJ
 ├── art.py          pixel art: medios bloques, logo, portadas, sprites generativos
 ├── library.py      archivos locales, colección (playlists/álbumes/artistas/carpetas), M3U8

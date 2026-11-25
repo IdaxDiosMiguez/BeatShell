@@ -5,13 +5,14 @@ from __future__ import annotations
 import unicodedata
 
 import numpy as np
+from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.binding import Binding
 from textual.color import Color
 from textual.message import Message
-from textual.reactive import reactive
+from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import DataTable, Tree
 
@@ -229,31 +230,40 @@ _EIGHTHS = " ▁▂▃▄▅▆▇█"
 class Visualizer(ThemeAware):
     """Espectro en tiempo real (FFT de lo que suena).
 
-    Barras finas con resolución de 1/8 de celda y un degradado horizontal:
-    graves a la izquierda, agudos a la derecha.
+    Barras finas con resolución de 1/8 de celda y un degradado horizontal: graves a la
+    izquierda, agudos a la derecha. Se dibuja línea a línea (`render_line`) con estilos
+    precalculados y solo se repinta cuando algo cambia de verdad: así gasta muy poca CPU.
     """
 
-    DEFAULT_CSS = "Visualizer { height: 1fr; min-height: 2; }"
+    DEFAULT_CSS = "Visualizer { height: 1fr; min-height: 1; }"
 
     def __init__(self, **kw) -> None:
         super().__init__(**kw)
         self.engine = None
         self._levels = np.zeros(0, dtype=np.float32)
-        self._colors: list[str] = []
-        self._dim = ""
+        self._cells = np.zeros(0, dtype=np.int32)  # altura de cada barra en octavos de celda
+        self._styles: list[Style] = []
+        self._dim = Style()
+        self._blank = Style()
 
     def on_theme_change(self) -> None:
-        self._colors = []
+        self._styles = []
         self.refresh()
 
-    def _bars(self) -> int:
-        return max(1, (self.size.width + 1) // 2)
+    def _ensure_styles(self, n: int) -> None:
+        if len(self._styles) == n:
+            return
+        p = palette(self.app)
+        stops = [p["secondary"], p["primary"], p["accent"]]
+        self._styles = [Style(color=art.hexc(art.gradient(stops, i / max(1, n - 1))))
+                        for i in range(n)]
+        self._dim = Style(color=art.hexc(art.lerp(p["dim"], p["bg"], 0.4)))
 
     def tick(self) -> None:
-        n = self._bars()
+        n = max(1, (self.size.width + 1) // 2)
         if len(self._levels) != n:
             self._levels = np.zeros(n, dtype=np.float32)
-            self._colors = []
+            self._cells = np.full(n, -1, dtype=np.int32)
         eng = self.engine
         playing = eng is not None and eng.active and not eng.paused and not eng.buffering
         if playing:
@@ -262,79 +272,98 @@ class Visualizer(ThemeAware):
             target = np.zeros(n, dtype=np.float32)
         # Subida rápida, caída suave: se siente vivo sin parpadear.
         up = target > self._levels
-        new = np.where(up, self._levels * 0.3 + target * 0.7, self._levels * 0.84 + target * 0.16)
-        if np.any(np.abs(new - self._levels) > 0.004) or np.any(new > 0.004):
-            self._levels = new
+        self._levels = np.where(up, self._levels * 0.3 + target * 0.7,
+                                self._levels * 0.84 + target * 0.16)
+        cells = np.round(self._levels * self.size.height * 8).astype(np.int32)
+        if not np.array_equal(cells, self._cells):  # solo si cambia algún octavo de celda
+            self._cells = cells
             self.refresh()
 
-    def render(self) -> Text:
+    def render_line(self, y: int) -> Strip:
         w, h = self.size.width, self.size.height
-        if w <= 0 or h <= 0:
-            return Text()
-        n = len(self._levels)
-        if len(self._colors) != n:
-            p = palette(self.app)
-            stops = [p["secondary"], p["primary"], p["accent"]]
-            self._colors = [art.hexc(art.gradient(stops, i / max(1, n - 1))) for i in range(n)]
-            self._dim = art.hexc(art.lerp(p["dim"], p["bg"], 0.4))
-        out = Text(no_wrap=True, overflow="crop")
-        for row in range(h):
-            floor = h - 1 - row  # filas por debajo de esta
-            for i in range(min(n, (w + 1) // 2)):
-                v = float(self._levels[i]) * h
-                fill = v - floor
-                if fill >= 1:
-                    ch, col = "█", self._colors[i]
-                elif fill > 0.06:
-                    ch, col = _EIGHTHS[max(1, int(fill * 8))], self._colors[i]
-                elif row == h - 1:
-                    ch, col = "▁", self._dim  # línea base discreta en silencio
-                else:
-                    ch, col = " ", self._dim
-                out.append(ch, col)
-                if i * 2 + 1 < w:
-                    out.append(" ")
-            if row < h - 1:
-                out.append("\n")
-        return out
+        n = len(self._cells)
+        if w <= 0 or h <= 0 or n == 0:
+            return Strip.blank(w)
+        self._ensure_styles(n)
+        floor8 = (h - 1 - y) * 8  # octavos que hay por debajo de esta fila
+        segs: list[Segment] = []
+        bars = min(n, (w + 1) // 2)
+        for i in range(bars):
+            fill = int(self._cells[i]) - floor8
+            if fill >= 8:
+                segs.append(Segment("█", self._styles[i]))
+            elif fill > 0:
+                segs.append(Segment(_EIGHTHS[fill], self._styles[i]))
+            elif y == h - 1:
+                segs.append(Segment("▁", self._dim))  # línea base discreta en silencio
+            else:
+                segs.append(Segment(" "))
+            if i * 2 + 1 < w:
+                segs.append(Segment(" "))
+        return Strip(segs).simplify().extend_cell_length(w)
 
 
 # --------------------------------------------------------------- barra de progreso
 class SeekBar(ThemeAware):
-    DEFAULT_CSS = "SeekBar { height: 1; }"
+    """Barra de progreso clicable. Solo se repinta cuando cambia algo visible."""
 
-    position = reactive(0.0)
-    duration = reactive(None)
+    DEFAULT_CSS = "SeekBar { height: 1; }"
 
     class Seek(Message):
         def __init__(self, seconds: float) -> None:
             super().__init__()
             self.seconds = seconds
 
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self.position = 0.0
+        self.duration: float | None = None
+        self._sig: tuple | None = None
+        self._styles: tuple | None = None
+
+    def on_theme_change(self) -> None:
+        self._styles = None
+        self._sig = None
+        self.refresh()
+
+    def set(self, position: float, duration: float | None) -> None:
+        self.position, self.duration = position, duration
+        left, width = self._bar_span()
+        filled = int(max(0.0, min(1.0, position / duration)) * width) if duration else -1
+        sig = (int(position), filled, int(duration or 0), width)
+        if sig != self._sig:
+            self._sig = sig
+            self.refresh()
+
     def _bar_span(self) -> tuple[int, int]:
         left = len(fmt_time(self.position)) + 1
         right = len(fmt_time(self.duration)) + 1
         return left, max(1, self.size.width - left - right)
 
-    def render(self) -> Text:
-        p = palette(self.app)
+    def render_line(self, y: int) -> Strip:
+        w = self.size.width
+        if y != 0 or w <= 0:
+            return Strip.blank(w)
         left, width = self._bar_span()
-        out = Text(no_wrap=True)
-        out.append(fmt_time(self.position) + " ", Style(color=art.hexc(p["fg"])))
-        frac = 0.0
-        if self.duration:
-            frac = max(0.0, min(1.0, self.position / self.duration))
-        filled = int(frac * width)
-        for i in range(width):
-            if i < filled:
-                c = art.gradient([p["secondary"], p["primary"]], i / max(1, width - 1))
-                out.append("━", Style(color=art.hexc(c)))
-            elif i == filled and self.duration:
-                out.append("●", Style(color=art.hexc(p["accent"]), bold=True))
-            else:
-                out.append("─", Style(color=art.hexc(p["dim"])))
-        out.append(" " + fmt_time(self.duration), Style(color=art.hexc(p["dim"])))
-        return out
+        if self._styles is None or len(self._styles[3]) != width:
+            p = palette(self.app)
+            grad = [Style(color=art.hexc(art.gradient([p["secondary"], p["primary"]],
+                                                      i / max(1, width - 1))))
+                    for i in range(width)]
+            self._styles = (Style(color=art.hexc(p["fg"])), Style(color=art.hexc(p["dim"])),
+                            Style(color=art.hexc(p["accent"]), bold=True), grad)
+        fg, dim, head, grad = self._styles
+        filled = int(max(0.0, min(1.0, self.position / self.duration)) * width) \
+            if self.duration else 0
+        segs = [Segment(fmt_time(self.position) + " ", fg)]
+        segs += [Segment("━", grad[i]) for i in range(filled)]
+        if self.duration and filled < width:
+            segs.append(Segment("●", head))
+            filled += 1
+        if filled < width:
+            segs.append(Segment("─" * (width - filled), dim))
+        segs.append(Segment(" " + fmt_time(self.duration), dim))
+        return Strip(segs).simplify().crop(0, w)
 
     def on_click(self, event: events.Click) -> None:
         if not self.duration:
@@ -399,6 +428,8 @@ class TrackTable(DataTable):
         self.tracks: list[Track] = []
         self.playing_key: str | None = None
         self.current_index: int | None = None  # solo para la cola
+        self._keys: list[str] = []
+        self._marked: set[int] = set()
         self._widths: tuple[int, ...] = ()
 
     # ------------------------------------------------------------ datos
@@ -415,6 +446,7 @@ class TrackTable(DataTable):
     def set_tracks(self, tracks: list[Track], keep_cursor: bool = True) -> None:
         row = self.cursor_row if keep_cursor else 0
         self.tracks = list(tracks)
+        self._keys = [t.key for t in self.tracks]  # se calcula una vez, no en cada repintado
         self._rebuild()
         if self.tracks:
             self.move_cursor(row=min(max(0, row), len(self.tracks) - 1), animate=False)
@@ -423,6 +455,7 @@ class TrackTable(DataTable):
         self._widths = self._compute_widths()
         tw, aw, bw = self._widths
         self.clear(columns=True)
+        self._marked = set()
         self.add_column(" ", key="mark", width=1)
         self.add_column("#", key="n", width=4)
         self.add_column("Título", key="title", width=tw)
@@ -442,21 +475,27 @@ class TrackTable(DataTable):
             cells.append(Text(f"{t.icon} {fmt_time(t.duration)}", justify="right", style="dim"))
             self.add_row(*cells, key=str(i))
 
-    def _mark(self, i: int, t: Track) -> Text:
+    def _is_marked(self, i: int) -> bool:
         if self.context == "queue":
-            if i == self.current_index:
-                return Text("▶", style="bold")
-            return Text(" ")
-        if self.playing_key and t.key == self.playing_key:
-            return Text("♪", style="bold")
+            return i == self.current_index
+        return bool(self.playing_key) and i < len(self._keys) and self._keys[i] == self.playing_key
+
+    def _mark(self, i: int, t: Track) -> Text:
+        if self._is_marked(i):
+            self._marked.add(i)
+            return Text("▶" if self.context == "queue" else "♪", style="bold")
         return Text(" ")
 
     def refresh_marks(self) -> None:
-        for i, t in enumerate(self.tracks):
+        """Actualiza solo las filas cuya marca cambia (no toda la tabla)."""
+        want = {i for i in range(len(self.tracks)) if self._is_marked(i)}
+        for i in (self._marked ^ want):
             try:
-                self.update_cell(str(i), "mark", self._mark(i, t))
+                self.update_cell(str(i), "mark", self._mark(i, self.tracks[i]) if i in want
+                                 else Text(" "))
             except Exception:
-                break
+                pass
+        self._marked = want
 
     def on_resize(self, event: events.Resize) -> None:
         if self.tracks and self._compute_widths() != self._widths:

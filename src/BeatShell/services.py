@@ -39,6 +39,9 @@ class Resolver:
         self._locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
         self._hq_busy: set[str] = set()
+        self._prefetching: set[str] = set()
+        # pocas extracciones a la vez: cada una lanza peticiones (y a veces Deno)
+        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="prefetch")
 
     def _lock_for(self, key: str) -> threading.Lock:
         with self._guard:
@@ -74,7 +77,7 @@ class Resolver:
                 return found
         return None
 
-    def resolve(self, track: Track) -> Source:
+    def resolve(self, track: Track, warm_hq: bool = True) -> Source:
         path = self.local_path(track)
         if path:
             return Source(input=path, duration=track.duration)
@@ -82,7 +85,8 @@ class Resolver:
         hq = youtube.cached_stream(url)
         if hq is not None and hq.available_at <= time.time() + 0.3:
             return self._finish(track, hq)
-        self.warm_hq(url)  # la alta calidad se prepara mientras ya suena la rápida
+        if warm_hq:
+            self.warm_hq(url)  # la alta calidad se prepara mientras ya suena la rápida
         try:
             src, meta = youtube.stream_info(url, fast=True)
         except youtube.YouTubeError:
@@ -129,19 +133,33 @@ class Resolver:
             time.sleep(wait + 0.2)
         return self._finish(track, src)
 
-    def prefetch(self, track: Track | None) -> None:
+    def prefetch(self, track: Track | None, hq: bool = True) -> None:
+        """Prepara una canción para que empiece al instante.
+
+        hq=False (filas por las que pasas, resultados): solo el stream rápido, que es ligero.
+        hq=True (la siguiente de la cola): también la alta calidad, que hay tiempo de sobra.
+        """
         if track is None or self.local_path(track):
             return
+        key = f"{track.key}|{hq}"
+        with self._guard:
+            if key in self._prefetching:
+                return
+            self._prefetching.add(key)
 
         def run() -> None:
             try:
                 url = self.ensure_url(track)
-                self.warm_hq(url)
-                self.resolve(track)
+                if hq:
+                    self.warm_hq(url)
+                self.resolve(track, warm_hq=False)
             except Exception:
                 pass
+            finally:
+                with self._guard:
+                    self._prefetching.discard(key)
 
-        threading.Thread(target=run, daemon=True, name="prefetch").start()
+        self._pool.submit(run)
 
 
 # ------------------------------------------------------------------ archivos

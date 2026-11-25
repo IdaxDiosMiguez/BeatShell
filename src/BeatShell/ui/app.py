@@ -26,7 +26,8 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from .. import art, eq
-from ..audio import AudioEngine, AudioError
+from ..audio import AudioError
+from ..audio_process import AudioEngine
 from ..config import Config
 from ..library import (
     AUDIO_EXTS,
@@ -176,6 +177,8 @@ class BeatShellApp(LibraryMixin, App):
         self._radio_for: str | None = None
         self._hq: tuple[int, object] | None = None  # (token, Source HQ) de la pista actual
         self._hq_tries = 0
+        self._next_info: tuple[int, str, int] | None = None  # (token, uid, versión de cola)
+        self._next_src = None
         self._lib_sel = ALL
         self._lib_tracks: list[Track] = []
         self._lib_expanded: set[str] = {"__local__"}
@@ -236,6 +239,7 @@ class BeatShellApp(LibraryMixin, App):
             self.register_theme(th)
         self.theme = self.cfg.theme if self.cfg.theme in self.available_themes else "beatshell"
         self.query_one(Visualizer).engine = self.engine
+        self.query_one(Visualizer).display = self.cfg.visualizer
         self.query_one(CoverArt).pixel_style = self.cfg.pixel_covers
         self.query_one("#search-loading").display = False
         dt = self.query_one("#downloads-table", DataTable)
@@ -267,10 +271,11 @@ class BeatShellApp(LibraryMixin, App):
         self._update_controls()
         self._update_sidebar_stats()
         self._on_size()
-        self.set_interval(1 / 30, self._tick)
+        self.set_interval(1 / 20, self._tick)
         self.query_one("#nav", OptionList).highlighted = 0
         self.query_one("#queue-table", TrackTable).focus()
         self._scan_library()
+        self._wait_audio()
 
         if self._initial:
             text = self._initial
@@ -282,6 +287,22 @@ class BeatShellApp(LibraryMixin, App):
         elif not tracks and not self._initial:
             self.notify("Escribe arriba qué quieres escuchar y pulsa Enter. Pulsa ? para ver la ayuda.",
                         title="¡Bienvenido a BeatShell!", timeout=8)
+
+    @work(thread=True, group="audio-init")
+    def _wait_audio(self) -> None:
+        if self.engine is None:
+            return
+        try:
+            self.engine.wait_ready()
+        except AudioError as exc:
+            self.call_from_thread(self._audio_failed, str(exc))
+
+    def _audio_failed(self, error: str) -> None:
+        self.engine_error = error
+        self.engine = None
+        self.query_one(Visualizer).engine = None
+        self.notify(error, title="Sin audio", severity="error", timeout=15)
+        self._update_status()
 
     def on_resize(self, event: events.Resize) -> None:
         # Usamos el tamaño del evento: self.size todavía puede ser el anterior.
@@ -312,18 +333,22 @@ class BeatShellApp(LibraryMixin, App):
     def _tick(self) -> None:
         eng = self.engine
         if eng is not None:
+            eng.pump()
+            if eng.poll_advanced():
+                self._on_advanced()
             if eng.poll_finished():
                 self._on_track_end()
             seek = self.query_one(SeekBar)
             if eng.active:
-                seek.position = eng.position
-                seek.duration = eng.duration
+                seek.set(eng.position, eng.duration)
             elif self._loading is None:
-                seek.position = 0.0
-                seek.duration = self.queue.current.duration if self.queue.current else None
-            self.query_one(Visualizer).tick()
+                seek.set(0.0, self.queue.current.duration if self.queue.current else None)
+            if self.cfg.visualizer:
+                self.query_one(Visualizer).tick()
             if self.cfg.dj_mode:
                 self._dj_tick(eng)
+            else:
+                self._gapless_tick(eng)
             if self._hq is not None and eng.is_fast and eng.upgrade_state != "pending":
                 self._try_upgrade()
             self._update_status()
@@ -348,6 +373,7 @@ class BeatShellApp(LibraryMixin, App):
         if self.engine is None:
             self.notify(self.engine_error or "Audio no disponible", severity="error")
             return
+        self._next_info = self._next_src = None
         if not (xfade > 0 and self.engine.active and not self.engine.paused):
             xfade = 0.0
             self.engine.stop()
@@ -470,6 +496,58 @@ class BeatShellApp(LibraryMixin, App):
     def _idle(self) -> bool:
         return self.engine is None or (not self.engine.active and self._loading is None)
 
+    # ----------------------------------------------------------- sin huecos
+    def _gapless_tick(self, eng: AudioEngine) -> None:
+        """A 10 s del final, la siguiente canción se pre-decodifica en el motor."""
+        info = self._next_info
+        if info is not None and info[0] == self._load_token and info[2] != self.queue.version:
+            eng.clear_next()  # la cola cambió: lo preparado ya no vale
+            self._next_info = info = self._next_src = None
+        cur = self.queue.current
+        if cur is None or not eng.active or self._loading is not None:
+            return
+        dur = eng.duration
+        if not dur or dur - eng.position > 10:
+            return
+        if info is not None and info[0] == self._load_token:
+            return
+        nxt = self.queue.peek_next()
+        if nxt is None:
+            return
+        self._next_info = (self._load_token, nxt.uid, self.queue.version)
+        self._prepare_next(nxt, self._load_token)
+
+    @work(thread=True, group="next")
+    def _prepare_next(self, track: Track, token: int) -> None:
+        try:
+            src = self.resolver.resolve(track)
+        except Exception:  # noqa: BLE001 - si falla, la transición normal se encarga
+            return
+        self.call_from_thread(self._next_ready, track, token, src)
+
+    def _next_ready(self, track: Track, token: int, src) -> None:  # noqa: ANN001
+        info = self._next_info
+        if (self.engine is None or info is None or info[0] != token or token != self._load_token
+                or info[1] != track.uid or self.cfg.dj_mode):
+            return
+        self._next_src = src
+        self.engine.set_next(src)
+
+    def _on_advanced(self) -> None:
+        """El motor ya empalmó la siguiente canción: ponemos la app al día."""
+        src = self._next_src
+        self._next_info = self._next_src = None
+        nxt = self.queue.advance(auto=True)
+        self._load_token += 1
+        self._loading = None
+        self._fail_streak = 0
+        self._hq, self._hq_tries = None, 0
+        self._set_now(nxt)
+        self._refresh_marks(nxt)
+        if nxt is not None and src is not None and src.fast:
+            self._await_hq(nxt, self._load_token)
+        self.resolver.prefetch(self.queue.peek_next())
+
     # ----------------------------------------------------------- modo DJ
     def _dj_tick(self, eng: AudioEngine) -> None:
         cur = self.queue.current
@@ -517,6 +595,9 @@ class BeatShellApp(LibraryMixin, App):
 
     def action_toggle_dj(self) -> None:
         self.cfg.dj_mode = not self.cfg.dj_mode
+        if self.engine is not None and self._next_info is not None:
+            self.engine.clear_next()
+            self._next_info = self._next_src = None
         self.cfg.save()
         self._apply_filters()
         self._update_controls()
@@ -960,7 +1041,7 @@ class BeatShellApp(LibraryMixin, App):
         else:
             # Pre-resolvemos los primeros resultados: suelen ser los que se eligen.
             for t in col.tracks[:3]:
-                self.resolver.prefetch(t)
+                self.resolver.prefetch(t, hq=False)
 
     @on(DataTable.RowHighlighted)
     def _row_highlight(self, event: DataTable.RowHighlighted) -> None:
@@ -973,7 +1054,7 @@ class BeatShellApp(LibraryMixin, App):
             return
         if self._prefetch_timer is not None:
             self._prefetch_timer.stop()
-        self._prefetch_timer = self.set_timer(0.35, lambda: self.resolver.prefetch(t))
+        self._prefetch_timer = self.set_timer(0.35, lambda: self.resolver.prefetch(t, hq=False))
 
     # ================================================================ acciones de tabla
     @on(TrackTable.Action)

@@ -100,9 +100,13 @@ class Library:
         # ruta → {mtime, meta}
         self._index: dict[str, dict] = raw.get("index", {})
         self._lock = threading.RLock()
+        self._version = 0
+        self._cache: list[Track] = []
+        self._cache_sig: tuple | None = None
 
     def save(self) -> None:
         with self._lock:
+            self._version += 1
             write_json_atomic(self.PATH, {
                 "folders": [f.__dict__ for f in self.folders],
                 "index": self._index,
@@ -206,24 +210,39 @@ class Library:
         return best if best and os.path.exists(best) else None
 
     # --------------------------------------------------------------- consulta
+    def _all_sorted(self) -> list[Track]:
+        """Todas las canciones ordenadas, en caché hasta que cambie el índice."""
+        sig = (id(self._index), len(self._index), self._version)
+        if self._cache_sig != sig:
+            with self._lock:
+                items = list(self._index.items())
+            tracks = [track_from_file(Path(k), v) for k, v in items]
+            tracks.sort(key=lambda t: ((t.artist or "~").lower(), (t.album or "").lower(),
+                                       t.track_no or 0, t.title.lower()))
+            self._cache, self._cache_sig = tracks, sig
+        return self._cache
+
+    def _prefix(self, folder_id: str) -> str | None:
+        f = self.folder(folder_id)
+        return os.path.normcase(os.path.join(f.path, "")) if f else None
+
     def tracks(self, folder_id: str | None = None) -> list[Track]:
-        with self._lock:
-            items = list(self._index.items())
+        tracks = self._all_sorted()
         if folder_id:
-            f = self.folder(folder_id)
-            if not f:
+            prefix = self._prefix(folder_id)
+            if prefix is None:
                 return []
-            prefix = os.path.normcase(os.path.join(f.path, ""))
-            items = [(k, v) for k, v in items if os.path.normcase(k).startswith(prefix)]
-        tracks = [track_from_file(Path(k), v) for k, v in items]
-        tracks.sort(key=lambda t: ((t.artist or "~").lower(), (t.album or "").lower(),
-                                   t.track_no or 0, t.title.lower()))
-        return tracks
+            tracks = [t for t in tracks if os.path.normcase(t.path or "").startswith(prefix)]
+        return list(tracks)
 
     def count(self, folder_id: str | None = None) -> int:
         if folder_id is None:
             return len(self._index)
-        return len(self.tracks(folder_id))
+        prefix = self._prefix(folder_id)
+        if prefix is None:
+            return 0
+        with self._lock:
+            return sum(1 for k in self._index if os.path.normcase(k).startswith(prefix))
 
 
 # ------------------------------------------------------------------ colección
