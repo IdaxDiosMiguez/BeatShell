@@ -5,9 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "BeatShell"
 version = "0.0.1"
-description = ""
+description = "Reproductor de música para terminal con pixel art: YouTube, Spotify y archivos locales."
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "GPL-2.0-only" }
 
 authors = [
     { name = "Ismael Dios Miguez", email = "idaxdm@gmail.com" },
@@ -17,6 +18,19 @@ authors = [
 classifiers = [
     "Environment :: Console",
     "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+]
+
+dependencies = [
+    "textual>=1.0",
+    "yt-dlp[default]>=2025.11.12",
+    "numpy>=1.24",
+    "sounddevice>=0.4.6",
+    "imageio-ffmpeg>=0.5",
+    "mutagen>=1.47",
+    "pillow>=10.0",
+    "platformdirs>=4.0",
 ]
 
 
@@ -28,3 +42,6 @@ beatshell = "BeatShell.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+BeatShell = ["ui/*.tcss"]

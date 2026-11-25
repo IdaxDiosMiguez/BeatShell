@@ -1,0 +1,250 @@
+Screen {
+    background: $background;
+    layers: base overlay;
+}
+
+/* ---------------------------------------------------------- cabecera */
+#top {
+    height: 3;
+    background: $background;
+}
+#top Logo {
+    margin: 0 1 0 1;
+}
+#omnibar {
+    width: 1fr;
+    height: 3;
+    border: tall $primary 40%;
+    background: $surface;
+    padding: 0 1;
+}
+#omnibar:focus {
+    border: tall $primary;
+}
+
+/* ---------------------------------------------------------- cuerpo */
+#body {
+    height: 1fr;
+}
+#sidebar {
+    width: 24;
+    background: $surface;
+    border-right: tall $primary 20%;
+}
+#nav {
+    height: auto;
+    background: $surface;
+    border: none;
+    padding: 1 0 0 0;
+}
+#nav > .option-list--option {
+    padding: 0 1;
+}
+#nav:focus {
+    border: none;
+}
+#sidebar-stats {
+    dock: bottom;
+    height: auto;
+    padding: 1 1;
+    color: $text-muted;
+}
+#views {
+    width: 1fr;
+    padding: 0 1;
+}
+.view-header {
+    height: auto;
+    min-height: 1;
+    padding: 1 1 0 1;
+    text-style: bold;
+}
+.view-hint {
+    height: auto;
+    padding: 0 1 1 1;
+    color: $text-muted;
+}
+.split {
+    height: 1fr;
+}
+.side-list {
+    width: 30;
+    height: 1fr;
+    border: round $primary 30%;
+    background: $background;
+    margin-right: 1;
+}
+.side-list:focus {
+    border: round $primary;
+}
+.side-list-title {
+    padding: 0 1;
+    color: $text-muted;
+}
+#library-filter {
+    border: round $secondary 30%;
+    height: 3;
+    background: $background;
+}
+#library-filter:focus {
+    border: round $secondary;
+}
+
+TrackTable, #downloads-table {
+    height: 1fr;
+    background: $background;
+    border: round $primary 30%;
+    scrollbar-size-vertical: 1;
+}
+TrackTable:focus, #downloads-table:focus {
+    border: round $primary;
+}
+TrackTable > .datatable--header, #downloads-table > .datatable--header {
+    background: $background;
+    color: $secondary;
+    text-style: bold;
+}
+TrackTable > .datatable--cursor, #downloads-table > .datatable--cursor {
+    background: $primary 35%;
+    color: $foreground;
+    text-style: bold;
+}
+TrackTable:focus > .datatable--cursor, #downloads-table:focus > .datatable--cursor {
+    background: $primary 60%;
+}
+TrackTable > .datatable--even-row, #downloads-table > .datatable--even-row {
+    background: $surface 40%;
+}
+
+.empty {
+    height: 1fr;
+    content-align: center middle;
+    color: $text-muted;
+    text-align: center;
+}
+
+LoadingIndicator {
+    color: $primary;
+    height: 3;
+}
+
+/* ---------------------------------------------------------- reproductor */
+#player {
+    height: 13;
+    border-top: tall $primary 40%;
+    background: $surface;
+    padding: 0 1;
+}
+#player CoverArt {
+    width: 26;
+    height: 12;
+    margin-right: 2;
+}
+#player-main {
+    width: 1fr;
+}
+#now-title {
+    height: 1;
+    text-style: bold;
+    color: $foreground;
+}
+#now-sub {
+    height: 1;
+    color: $secondary;
+}
+#now-status {
+    height: 1;
+    color: $text-muted;
+}
+#player Visualizer {
+    height: 1fr;
+    margin: 1 0 0 0;
+}
+#player SeekBar {
+    margin-top: 1;
+}
+#controls {
+    height: 1;
+    margin-top: 1;
+    link-style: none;
+    link-background-hover: $primary 30%;
+    link-style-hover: bold;
+}
+
+/* Terminal bajita: reproductor compacto sin portada grande */
+Screen.-compact #player {
+    height: 7;
+}
+Screen.-compact #player CoverArt {
+    width: 12;
+    height: 6;
+}
+Screen.-compact #player Visualizer {
+    display: none;
+}
+Screen.-compact #player SeekBar, Screen.-compact #controls {
+    margin-top: 0;
+}
+Screen.-compact #top Logo {
+    display: none;
+}
+Screen.-narrow #sidebar {
+    display: none;
+}
+
+/* ---------------------------------------------------------- diálogos */
+ModalScreen {
+    align: center middle;
+    background: $background 70%;
+}
+.dialog {
+    width: 64;
+    height: auto;
+    max-height: 90%;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+.dialog.help {
+    width: 84;
+    height: 90%;
+}
+.dialog-title {
+    text-style: bold;
+    color: $primary;
+    margin-bottom: 1;
+    width: 100%;
+}
+.dialog-hint {
+    color: $text-muted;
+    margin-top: 1;
+    width: 100%;
+}
+.dialog-buttons {
+    height: auto;
+    margin-top: 1;
+    align-horizontal: right;
+}
+.dialog-buttons Button {
+    margin-left: 1;
+}
+.dialog Input {
+    border: round $secondary 50%;
+}
+.dialog Input:focus {
+    border: round $secondary;
+}
+#picker {
+    height: auto;
+    max-height: 18;
+    border: round $primary 30%;
+}
+.help-title {
+    color: $secondary;
+    text-style: bold;
+    margin-top: 1;
+}
+
+Footer {
+    background: $surface;
+}
