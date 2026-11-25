@@ -159,6 +159,8 @@ QLineEdit#filter {{ background: transparent; border: none; border-bottom: 1px so
 QLineEdit#filter:focus {{ border-bottom: 1px solid {t.accent}; }}
 #pageTitle {{ font-size: 26px; font-weight: 800; }}
 #pageSub {{ color: {t.muted}; }}
+#heroTitle {{ font-size: 44px; font-weight: 800; }}
+#heroKind {{ font-size: 12px; font-weight: 600; color: {t.text}; }}
 #empty {{ color: {t.faint}; font-size: 14px; }}
 
 QPushButton {{ border: none; border-radius: 9px; padding: 7px 16px; font-weight: 600;

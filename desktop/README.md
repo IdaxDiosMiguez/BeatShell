@@ -6,7 +6,10 @@ Un ejecutable para **macOS, Windows y Linux**, sin instalar Python.
 
 - Una barra arriba para todo: escribe y busca en YouTube, o pega un enlace de YouTube/Spotify.
 - Doble clic para escuchar. Clic derecho para encolar, añadir a una playlist o descargar.
-- Tu biblioteca a la izquierda: tus carpetas de música, playlists, álbumes y artistas.
+- Tu biblioteca a la izquierda, como en Spotify: cada playlist con su portada (o un mosaico con las
+  de sus canciones), su nombre y «Playlist · autor»; al abrirla, portada grande y la de cada canción.
+- **Importar de Spotify** (botón **+** de «Tu biblioteca», o pegando el enlace en la barra): una
+  playlist, un álbum o un perfil entero (todas sus playlists públicas).
 - **Temas**: los mismos que en la terminal (BeatShell, Game Boy, Sunset, Ice) más claro, oscuro y
   automático. Se cambian en vivo desde **Ajustes**.
 - **Modo segundo plano** para jugar o trabajar con música: la ventana se cierra del todo y BeatShell

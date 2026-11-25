@@ -46,13 +46,28 @@ from BeatShell.sources import Collection, classify
 
 from . import icons, workers
 from .settings_page import SettingsPage
-from .widgets import Bar, Cover, DownloadDelegate, DownloadModel, PlayButton, Toast, TrackList
+from .widgets import (
+    ROLE_ART,
+    ROLE_SUB,
+    Bar,
+    CollectionDelegate,
+    Cover,
+    DownloadDelegate,
+    DownloadModel,
+    HeroCover,
+    PlayButton,
+    Toast,
+    TrackList,
+    covers,
+    mosaic_sources,
+)
 
 if TYPE_CHECKING:
     from .shell import Shell
 
 SEARCH, QUEUE, COLLECTION, DOWNLOADS, SETTINGS = range(5)
 KIND_ICON = {PLAYLIST: "list", ALBUM: "album", ARTIST: "artist"}
+KIND_NAME = {PLAYLIST: "Playlist", ALBUM: "Álbum", ARTIST: "Artista"}
 
 
 def _human_duration(seconds: float) -> str:
@@ -60,6 +75,12 @@ def _human_duration(seconds: float) -> str:
     if m < 60:
         return f"{m} min"
     return f"{m // 60} h {m % 60} min"
+
+
+def _html(text: str) -> str:
+    from html import escape
+
+    return escape(text or "")
 
 
 def _summary(tracks: list[Track]) -> str:
@@ -73,16 +94,35 @@ def _summary(tracks: list[Track]) -> str:
 class Page(QWidget):
     """Cabecera (título, subtítulo, botones) + contenido."""
 
-    def __init__(self, title: str) -> None:
+    def __init__(self, title: str, hero: HeroCover | None = None) -> None:
         super().__init__()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 18, 20, 0)
         lay.setSpacing(4)
-        self.title = QLabel(title, objectName="pageTitle")
+        self.title = QLabel(title, objectName="heroTitle" if hero else "pageTitle")
         self.title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.sub = QLabel("", objectName="pageSub")
-        lay.addWidget(self.title)
-        lay.addWidget(self.sub)
+        self.hero = hero
+        if hero is None:
+            lay.addWidget(self.title)
+            lay.addWidget(self.sub)
+        else:
+            # Como en Spotify: portada grande y, al lado, tipo · nombre · autor y canciones
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 6, 0, 4)
+            row.setSpacing(22)
+            row.addWidget(hero, 0, Qt.AlignmentFlag.AlignBottom)
+            col = QVBoxLayout()
+            col.setSpacing(6)
+            col.addStretch(1)
+            self.kind = QLabel("", objectName="heroKind")
+            self.title.setWordWrap(True)
+            self.sub.setTextFormat(Qt.TextFormat.RichText)
+            col.addWidget(self.kind)
+            col.addWidget(self.title)
+            col.addWidget(self.sub)
+            row.addLayout(col, 1)
+            lay.addLayout(row)
         self.actions = QHBoxLayout()
         self.actions.setContentsMargins(0, 12, 0, 8)
         self.actions.setSpacing(8)
@@ -164,7 +204,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ construcción
     def _build_sidebar(self) -> QWidget:
         side = QFrame(objectName="sidebar")
-        side.setFixedWidth(232)
+        side.setFixedWidth(272)
         v = QVBoxLayout(side)
         v.setContentsMargins(12, 18, 12, 12)
         v.setSpacing(2)
@@ -201,6 +241,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(add)
         menu.addAction("Nueva playlist", self._new_playlist)
         menu.addAction("Añadir carpeta de música…", self._pick_folder)
+        menu.addAction("Importar de Spotify…", self._import_spotify_dialog)
         menu.addAction("Importar playlist (.m3u8)…", self._import_playlist)
         menu.addSeparator()
         menu.addAction("Volver a leer la biblioteca", self.player.rescan)
@@ -209,7 +250,10 @@ class MainWindow(QMainWindow):
         v.addLayout(head)
 
         self.collections = QListWidget(objectName="collections")
-        self.collections.setIconSize(QSize(16, 16))
+        self.collections.setItemDelegate(CollectionDelegate(self.t, self.collections))
+        self.collections.setMouseTracking(True)
+        self.collections.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        covers().ready.connect(self.collections.viewport().update)
         self.collections.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.collections.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.collections.customContextMenuRequested.connect(self._collection_menu)
@@ -268,7 +312,8 @@ class MainWindow(QMainWindow):
         return p
 
     def _build_collection_page(self) -> QWidget:
-        p = Page("Biblioteca")
+        self.c_hero = HeroCover(self.t, 184)
+        p = Page("Biblioteca", hero=self.c_hero)
         self.c_play = p.button("Reproducir", primary=True)
         self.c_shuffle = p.button("Aleatorio")
         self.c_dl = p.button("Descargar MP3")
@@ -653,6 +698,9 @@ class MainWindow(QMainWindow):
             workers.run(run, done=lambda col: self._show_results(col, quick, seq),
                         fail=lambda e: self._search_failed(str(e), seq))
             return False
+        if kind == "spotify_user":  # un perfil no se reproduce: se importan sus playlists
+            self._import_spotify(text)
+            return True
         if kind in ("youtube_playlist", "spotify"):
             single = kind == "spotify" and value.startswith("track:")
             if not single:
@@ -675,8 +723,14 @@ class MainWindow(QMainWindow):
             def got(col: Collection) -> None:
                 if single:
                     self.player.enqueue([col.tracks[0]])
-                else:
-                    self._show_results(col, False, seq)
+                    return
+                self._show_results(col, False, seq)
+                if kind == "spotify" and col.kind == "playlist":
+                    from BeatShell.sources import spotify
+
+                    # portadas de cada canción (el embed no las trae); se pintan al llegar
+                    workers.run(spotify.fill_covers, col.tracks,
+                                done=lambda _r: self.s_list.viewport().update())
 
             workers.run(run_col, done=got, fail=lambda e: self._search_failed(str(e), seq))
             return True
@@ -794,24 +848,43 @@ class MainWindow(QMainWindow):
         self.collections.blockSignals(True)
         self.collections.clear()
 
-        def add(text: str, icon: str, data: tuple, tip: str = "") -> None:
-            it = QListWidgetItem(icons.icon(icon, t.muted, t.text, 16), text)
+        def add(text: str, sub: str, art: tuple, data: tuple, tip: str = "") -> None:
+            it = QListWidgetItem(text)
             it.setData(Qt.ItemDataRole.UserRole, data)
+            it.setData(ROLE_SUB, sub)
+            it.setData(ROLE_ART, art)
             it.setToolTip(tip or text)
             self.collections.addItem(it)
             if data == sel:
                 it.setSelected(True)
 
-        add("Todas las canciones", "note", ("all", None), f"{lib.count()} canciones en tu equipo")
+        n = lib.count()
+        add("Todas las canciones", f"{n} canciones en tu equipo", ([], "", "note", False),
+            ("all", None))
         for f in lib.folders:
-            add(f.name, "folder", ("dir", f.id), f.path)
+            add(f.name, "Carpeta", ([], "", "folder", False), ("dir", f.id), f.path)
         order = {PLAYLIST: 0, ALBUM: 1, ARTIST: 2}
         items = sorted((p for p in store.items if p.kind != FOLDER),
                        key=lambda p: (order.get(p.kind, 9), p.name.lower()))
         for p in items:
-            sub = f"{p.artist} · " if p.artist else ""
-            add(p.name, KIND_ICON.get(p.kind, "list"), ("pl", p.id), f"{sub}{len(p.tracks)} canciones")
+            add(p.name, self._kind_line(p), self._art(p), ("pl", p.id),
+                f"{self._kind_line(p)} · {len(p.tracks)} canciones")
         self.collections.blockSignals(False)
+
+    @staticmethod
+    def _kind_line(p) -> str:  # noqa: ANN001
+        """«Playlist · autor», como en Spotify."""
+        kind = KIND_NAME.get(p.kind, "Playlist")
+        if p.kind == ARTIST:
+            return kind
+        if p.artist:
+            return f"{kind} · {p.artist}"
+        return f"{kind} · {len(p.tracks)} canciones"
+
+    @staticmethod
+    def _art(p) -> tuple:  # noqa: ANN001
+        sources = mosaic_sources(p.thumb, p.tracks)
+        return sources, f"{p.artist}|{p.name}", None, p.kind == ARTIST
 
     def _collection_clicked(self, item: QListWidgetItem) -> None:
         self._select_collection(item.data(Qt.ItemDataRole.UserRole))
@@ -852,7 +925,18 @@ class MainWindow(QMainWindow):
             empty = "Playlist vacía.\nAñade canciones con clic derecho → Añadir a playlist."
         self._coll_tracks = tracks
         p.title.setText(title)
-        p.sub.setText(_summary(tracks) if tracks else "")
+        summary = _summary(tracks) if tracks else ""
+        if is_pl:
+            p.kind.setText("Playlist pública" if pl.source_url and "spotify" in pl.source_url
+                           and pl.kind == PLAYLIST else KIND_NAME.get(pl.kind, "Playlist"))
+            owner = f"<b style='color:{self.t.text}'>{_html(pl.artist)}</b> · " if pl.artist else ""
+            p.sub.setText(owner + _html(summary))
+            sources, seed, _tile, round_ = self._art(pl)
+            self.c_hero.set_art(sources, seed, round_=round_)
+        else:
+            p.kind.setText("Carpeta" if kind == "dir" else "Tu música")
+            p.sub.setText(_html(summary))
+            self.c_hero.set_art([], "", "folder" if kind == "dir" else "note")
         self.c_dl.setVisible(is_pl)
         self.c_list.model_.numbered = is_pl
         self.c_list.empty_text = empty
@@ -984,6 +1068,9 @@ class MainWindow(QMainWindow):
                 self.toast.show_message(f"No se pudo exportar: {exc}", True)
 
     def _import_playlist(self, path: str | None = None) -> None:
+        if path and classify(path)[0] in ("spotify", "spotify_user"):
+            self._import_spotify(path)
+            return
         if not path:
             path, _ = QFileDialog.getOpenFileName(self, "Importar playlist", str(Path.home()),
                                                   "Playlists (*.m3u *.m3u8)")
@@ -999,6 +1086,61 @@ class MainWindow(QMainWindow):
         self._select_collection(("pl", p.id))
         extra = f" ({missing} no encontradas)" if missing else ""
         self.toast.show_message(f"«{p.name}» importada: {len(tracks)} canciones{extra}", bool(missing))
+
+    def _import_spotify_dialog(self) -> None:
+        text, ok = QInputDialog.getText(
+            self, "Importar de Spotify",
+            "Pega el enlace de una playlist, un álbum o un perfil de Spotify.\n"
+            "Con un perfil se importan todas sus playlists públicas.")
+        if ok and text.strip():
+            if classify(text)[0] not in ("spotify", "spotify_user"):
+                self.toast.show_message("Eso no es un enlace de Spotify", True)
+                return
+            self._import_spotify(text.strip())
+
+    def _import_spotify(self, link: str) -> None:
+        from BeatShell.sources import spotify
+
+        user = classify(link)[0] == "spotify_user"
+        self.toast.show_message("Leyendo el perfil de Spotify…" if user else "Leyendo Spotify…")
+        cfg = self.player.cfg
+
+        def progress(i: int, n: int, name: str) -> None:
+            workers.on_main(lambda: self.toast.show_message(f"Importando {i + 1}/{n} · {name}"))
+
+        def run() -> object:
+            return spotify.import_link(link, cfg.spotify_client_id, cfg.spotify_client_secret,
+                                       progress)
+
+        def done(res) -> None:  # noqa: ANN001
+            prof = res.profile
+            store = self.player.playlists
+            _item, created, updated = store.import_collections(
+                res.collections, folder=prof.name if prof else None,
+                folder_url=prof.url if prof else None, folder_thumb=prof.thumb if prof else None)
+            self._refresh_collections()
+            first = store.by_url(res.collections[0].url)
+            if first is not None:
+                self._select_collection(("pl", first.id))
+            if prof is None:
+                col = res.collections[0]
+                msg = f"«{col.name}» importada: {len(col.tracks)} canciones"
+                if updated:
+                    msg = f"«{col.name}» actualizada: {len(col.tracks)} canciones"
+            else:
+                n = len(res.collections)
+                msg = f"{n} playlist{'s' if n != 1 else ''} de {prof.name} importadas"
+                if updated:
+                    msg += f" ({updated} actualizadas)"
+                if prof.total > len(prof.playlists):
+                    msg += (f" · tiene {prof.total}: sin credenciales de Spotify (Ajustes) "
+                            f"solo se leen las {len(prof.playlists)} primeras")
+                if res.failed:
+                    msg += f" · no se pudieron leer: {', '.join(res.failed)}"
+            self.toast.show_message(msg, bool(res.failed))
+
+        workers.run(run, done=done,
+                    fail=lambda e: self.toast.show_message(f"No se pudo importar: {e}", True))
 
     def _confirm(self, title: str, text: str) -> bool:
         box = QMessageBox(self)
@@ -1106,6 +1248,8 @@ class MainWindow(QMainWindow):
         for apply in self._icons:
             apply()
         self._refresh_collections()
+        if self.stack.currentIndex() == COLLECTION:
+            self._load_collection()  # el autor de la cabecera lleva el color del tema
         self._on_state()
         for card in self.settings_page.cards:
             card.setChecked(card.key == self.shell.theme_key)
