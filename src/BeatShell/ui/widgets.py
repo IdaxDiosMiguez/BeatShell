@@ -555,17 +555,38 @@ class TrackTable(DataTable):
 
 
 class LibraryTree(Tree):
-    """Árbol de la biblioteca. Espacio sigue siendo reproducir/pausa."""
+    """Árbol de la biblioteca.
+
+    Enter (o doble clic) reproduce lo seleccionado: una playlist, un álbum, un artista,
+    una carpeta entera… Un clic solo selecciona. Espacio sigue siendo reproducir/pausa y
+    ←/→ abren y cierran carpetas.
+    """
 
     BINDINGS = [
+        Binding("enter", "play_node", "Reproducir", show=True),
         Binding("space", "app.toggle_pause", "Play/Pausa", show=False),
         Binding("left,right", "toggle_node", "Abrir/cerrar", show=False),
     ]
+
+    class Play(Message):
+        """El usuario quiere escuchar el elemento del árbol."""
+
+        def __init__(self, node) -> None:  # noqa: ANN001
+            super().__init__()
+            self.node = node
 
     def __init__(self, **kw) -> None:
         super().__init__("Biblioteca", **kw)
         self.show_root = False
         self.guide_depth = 3
+
+    def action_play_node(self) -> None:
+        if self.cursor_node is not None:
+            self.post_message(self.Play(self.cursor_node))
+
+    def on_click(self, event: events.Click) -> None:
+        if event.chain >= 2 and self.cursor_node is not None:
+            self.post_message(self.Play(self.cursor_node))
 
 
 class DownloadsTable(DataTable):

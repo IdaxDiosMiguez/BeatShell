@@ -277,6 +277,7 @@ HELP_SECTIONS = [
         ("Mayús ↑↓", "Mover en la cola/playlist"),
     ]),
     ("Biblioteca", [
+        ("Enter", "En el árbol: reproducir la playlist, álbum, artista o carpeta entera"),
         ("N", "Nueva playlist"),
         ("C", "Nueva carpeta"),
         ("M", "Mover a una carpeta"),
