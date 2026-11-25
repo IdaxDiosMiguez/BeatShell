@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -129,6 +129,7 @@ class BeatShellApp(App):
         Binding("R", "rescan", "Re-escanear", show=False),
         Binding("N", "new_playlist", "Nueva playlist", show=False),
         Binding("e", "rename", "Renombrar", show=False),
+        Binding("ctrl+b", "toggle_sidebar", "Menú", key_display="^B", show=False),
         Binding("escape", "escape", show=False),
     ]
 
@@ -169,6 +170,7 @@ class BeatShellApp(App):
         self._groups: dict[str, list[str]] = {}
         self._prefetch_key: str | None = None
         self._prefetch_timer = None
+        self._sidebar_hint_shown = False
 
     # ================================================================ layout
     def compose(self) -> ComposeResult:
@@ -277,12 +279,30 @@ class BeatShellApp(App):
             self.notify("Escribe arriba qué quieres escuchar y pulsa Enter. Pulsa ? para ver la ayuda.",
                         title="¡Bienvenido a BeatShell!", timeout=8)
 
-    def on_resize(self) -> None:
-        self._on_size()
+    def on_resize(self, event: events.Resize) -> None:
+        # Usamos el tamaño del evento: self.size todavía puede ser el anterior.
+        self._on_size(event.size)
 
-    def _on_size(self) -> None:
-        self.screen.set_class(self.size.height < 34, "-compact")
-        self.screen.set_class(self.size.width < 90, "-narrow")
+    def _on_size(self, size=None) -> None:  # noqa: ANN001
+        size = size or self.size
+        # Siempre sobre la pantalla principal, aunque haya un diálogo abierto encima.
+        main = self.screen_stack[0] if self.screen_stack else self.screen
+        main.set_class(size.height < 34, "-compact")
+        pref = self.cfg.sidebar
+        hidden = pref == "hide" or (pref == "auto" and size.width < 90)
+        was_hidden = main.has_class("-narrow")
+        main.set_class(hidden, "-narrow")
+        if hidden and not was_hidden and pref == "auto" and not self._sidebar_hint_shown:
+            self._sidebar_hint_shown = True
+            self.notify("La ventana es estrecha y el menú se ha ocultado. "
+                        "Pulsa Ctrl+B para mostrarlo.", title="Menú lateral", timeout=6)
+
+    def action_toggle_sidebar(self) -> None:
+        main = self.screen_stack[0] if self.screen_stack else self.screen
+        visible = not main.has_class("-narrow")
+        self.cfg.sidebar = "hide" if visible else "show"
+        self.cfg.save()
+        self._on_size()
 
     # ================================================================ bucle
     def _tick(self) -> None:

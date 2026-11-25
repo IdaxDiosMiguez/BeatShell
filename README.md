@@ -85,6 +85,7 @@ Pulsa `?` dentro de la app para verlos todos. Los principales:
 | `Mayús ↑↓` | Mover canciones en la cola o playlist |
 | `f` · `R` | Biblioteca: añadir carpeta · re-escanear |
 | `N` · `e` | Playlists: nueva · renombrar |
+| `Ctrl+B` | Mostrar / ocultar el menú lateral (se recuerda al volver a abrir) |
 | `t` | Cambiar tema: *beatshell*, *gameboy*, *sunset*, *ice* |
 | `q` | Salir (la cola se guarda y se recupera al volver) |
 
@@ -106,6 +107,7 @@ Los botones del reproductor (◀◀ ▶ ▶▶, aleatorio, repetir, volumen) tam
 | `mp3_quality` | `"0"` = VBR V0 (~245 kbps, por defecto) · `"320"` = CBR 320 kbps |
 | `concurrent_downloads` | Descargas simultáneas (2 por defecto) |
 | `pixel_covers` | `false` para portadas sin reducir la paleta |
+| `sidebar` | `"auto"` (se oculta en ventanas estrechas), `"show"` o `"hide"`. Cambia con `Ctrl+B` |
 | `spotify_client_id` / `spotify_client_secret` | Opcional, ver abajo |
 
 ### Playlists de Spotify de más de 100 canciones
