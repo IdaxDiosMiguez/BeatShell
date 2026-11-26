@@ -76,6 +76,7 @@ class Config:
     pixel_covers: bool = True
     sidebar: str = "auto"  # auto (según el ancho) | show | hide — se cambia con Ctrl+B
     eq_preset: str = "Plano"
+    eq_custom: list = field(default_factory=lambda: [0.0] * 10)  # dB por banda (Personalizado)
     dj_mode: bool = False
     dj_crossfade: float = 8.0  # segundos de fundido entre canciones en modo DJ
     # auto: imagen real en Kitty/Ghostty, bloques en el resto · kitty: forzar · bloques: nunca

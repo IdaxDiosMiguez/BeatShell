@@ -22,6 +22,7 @@ PRESETS: dict[str, tuple[float, ...]] = {
     "Noche":        (5, 4, 2, 0, 0, 0, 0, 1, 3, 4),
 }
 DEFAULT = "Plano"
+CUSTOM = "Personalizado"  # tus ganancias (config.eq_custom), ajustables en directo
 
 PRESET_HINT = {
     "Plano": "Sin cambios: el sonido tal cual",
@@ -43,22 +44,38 @@ PRESET_HINT = {
 DJ_LEVELER = "dynaudnorm=f=300:g=15:p=0.9:m=10"
 
 
-def gains(name: str) -> tuple[float, ...]:
+RANGE_DB = 12.0  # ±12 dB por banda en el modo personalizado
+
+
+def valid(name: str) -> bool:
+    return name in PRESETS or name == CUSTOM
+
+
+def custom_gains(raw) -> tuple[float, ...]:  # noqa: ANN001
+    """Ganancias guardadas del modo personalizado, saneadas (10 valores en ±12 dB)."""
+    try:
+        vals = [max(-RANGE_DB, min(RANGE_DB, float(v))) for v in list(raw)[: len(BANDS)]]
+    except (TypeError, ValueError):
+        vals = []
+    return tuple(vals + [0.0] * (len(BANDS) - len(vals)))
+
+
+def gains(name: str, custom=None) -> tuple[float, ...]:  # noqa: ANN001
+    if name == CUSTOM:
+        return custom_gains(custom or ())
     return PRESETS.get(name, PRESETS[DEFAULT])
 
 
 def filter_chain(preset: str, dj: bool = False) -> str:
-    """Cadena `-af` de ffmpeg para el preset (y el nivelado del modo DJ)."""
-    parts: list[str] = []
-    g = gains(preset)
-    boost = max(0.0, max(g))
-    if any(g):
-        if boost:
-            # bajamos antes de realzar para no saturar
-            parts.append(f"volume=-{boost * 0.7:.1f}dB")
-        for freq, gain in zip(BANDS, g):
-            if gain:
-                parts.append(f"equalizer=f={freq}:t=o:w=1:g={gain}")
-    if dj:
-        parts.append(DJ_LEVELER)
-    return ",".join(parts)
+    """Cadena `-af` de ffmpeg: ya solo el nivelado del modo DJ.
+
+    El ecualizador va en directo en el motor de audio (live_eq): cambiarlo no reinicia el
+    decodificador y se oye al instante.
+    """
+    return DJ_LEVELER if dj else ""
+
+
+def apply(engine, preset: str, dj: bool = False, custom=None) -> None:  # noqa: ANN001
+    """Aplica preset (o personalizado) y modo DJ al motor de audio."""
+    engine.set_filters(filter_chain(preset, dj))
+    engine.set_eq(gains(preset, custom))

@@ -233,6 +233,10 @@ class AudioEngine:
         self._opt_seq = self._seq
         self._viz[:] = 0
 
+    def set_eq(self, gains) -> None:  # noqa: ANN001
+        """Ecualizador en directo (el proceso de audio lo aplica en el siguiente bloque)."""
+        self._send("set_eq", tuple(float(g) for g in gains))
+
     def set_filters(self, chain: str) -> None:
         if chain != self._filters:
             self._filters = chain
