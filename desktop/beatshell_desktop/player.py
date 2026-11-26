@@ -8,6 +8,7 @@ la ventana solo escucha sus señales.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 import time
 from pathlib import Path
 
@@ -20,6 +21,18 @@ from BeatShell.models import Track
 from BeatShell.playqueue import PlayQueue
 
 from . import workers
+
+
+@dataclass
+class PlayContext:
+    """De dónde viene lo que suena: lo que enseña la pantalla de inicio."""
+
+    kind: str                       # «Playlist», «Álbum», «Búsqueda»…
+    name: str
+    owner: str = ""
+    thumb: str | None = None
+    tracks: list = field(default_factory=list)  # para el mosaico si no hay portada
+    sel: tuple | None = None         # para volver a esa lista desde el inicio
 
 
 class Player(QObject):
@@ -35,8 +48,11 @@ class Player(QObject):
     def __init__(self) -> None:
         super().__init__()
         self.cfg = Config.load()
-        if self.cfg.eq_preset not in eq.PRESETS:
+        if not eq.valid(self.cfg.eq_preset):
             self.cfg.eq_preset = eq.DEFAULT
+        # De dónde se puso a sonar cada canción (playlist, álbum…), por canción: lo enseña
+        # la pantalla de inicio. Pocas entradas (se reemplaza al poner otra lista).
+        self._contexts: dict[str, PlayContext] = {}
         self.library = Library()
         self.playlists = PlaylistStore()
         self.matches = MatchCache()
@@ -104,7 +120,7 @@ class Player(QObject):
         error = None
         try:
             engine = AudioEngine(volume=self.cfg.volume)
-            engine.set_filters(eq.filter_chain(self.cfg.eq_preset, self.cfg.dj_mode))
+            eq.apply(engine, self.cfg.eq_preset, self.cfg.dj_mode, self.cfg.eq_custom)
         except Exception as exc:  # noqa: BLE001
             error = str(exc)
         resolver = Resolver(self.matches, self.library)
@@ -404,11 +420,18 @@ class Player(QObject):
     def idle(self) -> bool:
         return (self.engine is None or not self.engine.active) and self.loading is None
 
-    def play_list(self, tracks: list[Track], start: int = 0) -> None:
+    def play_list(self, tracks: list[Track], start: int = 0,
+                  context: "PlayContext | None" = None) -> None:
         if tracks:
+            self._contexts = {t.key: context for t in tracks} if context else {}
             self._start(self.queue.replace(tracks, start))
 
-    def play_now(self, track: Track) -> None:
+    def context_for(self, track: Track | None) -> "PlayContext | None":
+        return self._contexts.get(track.key) if track is not None else None
+
+    def play_now(self, track: Track, context: "PlayContext | None" = None) -> None:
+        if context is not None:
+            self._contexts[track.key] = context
         idx = self.queue.insert_next([track])
         self._start(self.queue.jump(idx))
 
@@ -513,8 +536,22 @@ class Player(QObject):
             self.cfg.eq_preset = preset
             self.cfg.save()
         if self.engine is not None:
-            self.engine.set_filters(eq.filter_chain(preset, self.cfg.dj_mode))
+            eq.apply(self.engine, preset, self.cfg.dj_mode, self.cfg.eq_custom)
         self.state_changed.emit()
+
+    def set_custom_eq(self, gains, save: bool = False) -> None:  # noqa: ANN001
+        """Ecualizador personalizado en directo: se oye en ~10 ms (más la salida de audio).
+
+        Mientras se arrastra no se toca el disco; `save=True` al soltar."""
+        self.cfg.eq_custom = list(eq.custom_gains(gains))
+        changed = self.cfg.eq_preset != eq.CUSTOM
+        self.cfg.eq_preset = eq.CUSTOM
+        if self.engine is not None:
+            self.engine.set_eq(self.cfg.eq_custom)
+        if save:
+            self.cfg.save()
+        if save or changed:
+            self.state_changed.emit()
 
     def toggle_dj(self) -> None:
         self.cfg.dj_mode = not self.cfg.dj_mode

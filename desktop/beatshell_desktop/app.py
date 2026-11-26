@@ -44,7 +44,9 @@ from BeatShell.library import (
 from BeatShell.models import Track, fmt_time
 from BeatShell.sources import Collection, classify
 
-from . import icons, workers
+from . import icons, style, workers
+from .home import HomePage
+from .player import PlayContext
 from .settings_page import SettingsPage
 from .widgets import (
     ROLE_ART,
@@ -65,7 +67,7 @@ from .widgets import (
 if TYPE_CHECKING:
     from .shell import Shell
 
-SEARCH, QUEUE, COLLECTION, DOWNLOADS, SETTINGS = range(5)
+SEARCH, QUEUE, COLLECTION, DOWNLOADS, SETTINGS, HOME = range(6)
 KIND_ICON = {PLAYLIST: "list", ALBUM: "album", ARTIST: "artist"}
 KIND_NAME = {PLAYLIST: "Playlist", ALBUM: "Álbum", ARTIST: "Artista"}
 
@@ -166,7 +168,8 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(right)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
-        v.addWidget(self._build_header())
+        self.header = self._build_header()  # se oculta en la pantalla de inicio
+        v.addWidget(self.header)
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_search_page())
         self.stack.addWidget(self._build_queue_page())
@@ -174,6 +177,10 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._build_downloads_page())
         self.settings_page = SettingsPage(shell)
         self.stack.addWidget(self.settings_page)
+        self.home = HomePage(self.t, self.player, shell.settings)
+        self.home.open_context.connect(self._open_context)
+        self.home.tint_changed.connect(self._home_tint)
+        self.stack.addWidget(self.home)
         v.addWidget(self.stack, 1)
         h.addWidget(right, 1)
 
@@ -211,9 +218,19 @@ class MainWindow(QMainWindow):
         brand = QHBoxLayout()
         brand.setContentsMargins(6, 0, 0, 14)
         brand.setSpacing(6)
-        dot = QLabel("▚", objectName="brandDot")
-        brand.addWidget(dot)
-        brand.addWidget(QLabel("BeatShell", objectName="brand"))
+        logo = QFrame(objectName="brandButton")
+        logo.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        logo.setCursor(Qt.CursorShape.PointingHandCursor)
+        logo.setToolTip("Inicio: lo que está sonando")
+        lh = QHBoxLayout(logo)
+        lh.setContentsMargins(4, 2, 8, 2)
+        lh.setSpacing(6)
+        for lab in (QLabel("▚", objectName="brandDot"), QLabel("BeatShell", objectName="brand")):
+            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            lh.addWidget(lab)
+        logo.setMinimumHeight(30)
+        logo.mousePressEvent = lambda _e: self.show_page(HOME)
+        brand.addWidget(logo)
         brand.addStretch(1)
         v.addLayout(brand)
 
@@ -371,6 +388,9 @@ class MainWindow(QMainWindow):
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(12)
         self.cover = Cover(64, 10)
+        self.cover.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cover.setToolTip("Inicio: lo que está sonando")
+        self.cover.mousePressEvent = lambda _e: self.show_page(HOME)
         left.addWidget(self.cover)
         txt = QVBoxLayout()
         txt.setSpacing(2)
@@ -452,6 +472,11 @@ class MainWindow(QMainWindow):
             self.eq_actions[name] = a
         self.eq_menu.aboutToHide.connect(lambda: self.player.set_eq(self.player.cfg.eq_preset, save=False))
         self.eq_menu.addSeparator()
+        custom = self.eq_menu.addAction("Personalizado (en directo)…")
+        custom.setCheckable(True)
+        custom.triggered.connect(self._open_eq)
+        self.eq_actions[eq.CUSTOM] = custom
+        self.eq_menu.addSeparator()
         self.dj_action = self.eq_menu.addAction("Modo DJ (fundidos y radio infinita)")
         self.dj_action.setCheckable(True)
         self.dj_action.triggered.connect(self.player.toggle_dj)
@@ -496,7 +521,8 @@ class MainWindow(QMainWindow):
         # buscar
         self.s_list.play_row.connect(self._play_search_row)
         self.s_list.menu.connect(lambda rows, pos: self._track_menu(self.s_list, rows, pos))
-        self.s_play.clicked.connect(lambda: self._results and pl.play_list(self._results.tracks, 0))
+        self.s_play.clicked.connect(lambda: self._results and pl.play_list(
+            self._results.tracks, 0, context=self._results_context(self._results)))
         self.s_queue.clicked.connect(lambda: self._results and pl.enqueue(self._results.tracks))
         self.s_save.clicked.connect(self._save_results)
         self.s_dl.clicked.connect(lambda: self._results and pl.download(
@@ -507,7 +533,8 @@ class MainWindow(QMainWindow):
         self.q_list.menu.connect(lambda rows, pos: self._track_menu(self.q_list, rows, pos))
         self.q_clear.clicked.connect(pl.clear_queue)
         # biblioteca
-        self.c_list.play_row.connect(lambda r: pl.play_list(self.c_list.tracks, r))
+        self.c_list.play_row.connect(lambda r: pl.play_list(self.c_list.tracks, r,
+                                                            context=self._coll_context()))
         self.c_list.menu.connect(lambda rows, pos: self._track_menu(self.c_list, rows, pos))
         self.c_list.delete_rows.connect(self._remove_from_playlist)
         self.c_play.clicked.connect(self._play_collection)
@@ -561,6 +588,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ navegación
     def show_page(self, page: int) -> None:
+        self.header.setVisible(page != HOME)  # el inicio va limpio, sin la barra de búsqueda
         self.stack.setCurrentIndex(page)
         for p, b in self.nav.items():
             b.setChecked(p == page)
@@ -570,6 +598,8 @@ class MainWindow(QMainWindow):
             self.focus_search()
 
     def focus_search(self) -> None:
+        if self.stack.currentIndex() == HOME:
+            self.show_page(SEARCH)
         self.search.setFocus()
         self.search.selectAll()
 
@@ -792,9 +822,9 @@ class MainWindow(QMainWindow):
         if col is None or row >= len(col.tracks):
             return
         if col.kind == "search":
-            self.player.play_now(col.tracks[row])
+            self.player.play_now(col.tracks[row], context=self._results_context(col))
         else:
-            self.player.play_list(col.tracks, row)
+            self.player.play_list(col.tracks, row, context=self._results_context(col))
 
     def _save_results(self) -> None:
         col = self._results
@@ -843,7 +873,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ biblioteca
     def _refresh_collections(self) -> None:
-        lib, store, t = self.player.library, self.player.playlists, self.t
+        lib, store = self.player.library, self.player.playlists
         sel = self._coll_sel if self.stack.currentIndex() == COLLECTION else None
         self.collections.blockSignals(True)
         self.collections.clear()
@@ -885,6 +915,41 @@ class MainWindow(QMainWindow):
     def _art(p) -> tuple:  # noqa: ANN001
         sources = mosaic_sources(p.thumb, p.tracks)
         return sources, f"{p.artist}|{p.name}", None, p.kind == ARTIST
+
+    # ------------------------------------------------------------ inicio
+    def _coll_context(self) -> PlayContext:
+        """De dónde suena lo que se pone desde la página de colección."""
+        kind, ident = self._coll_sel
+        if kind == "pl" and (p := self.player.playlists.get(ident)):
+            return PlayContext(KIND_NAME.get(p.kind, "Playlist"), p.name,
+                               p.artist if p.kind != ARTIST else "", p.thumb, p.tracks[:24], ("pl", ident))
+        if kind == "dir" and (f := self.player.library.folder(ident)):
+            return PlayContext("Carpeta", f.name, sel=("dir", ident))
+        return PlayContext("Tu música", "Todas las canciones", sel=("all", None))
+
+    @staticmethod
+    def _results_context(col: Collection) -> PlayContext:
+        if col.kind == "search":
+            return PlayContext("Búsqueda", f"«{col.name}»", sel=("search",))
+        return PlayContext("Álbum" if col.kind == "album" else "Playlist", col.name, col.owner,
+                           col.thumb, col.tracks[:24], ("search",))
+
+    def _open_context(self, sel: tuple) -> None:
+        if sel and sel[0] == "search":
+            self.show_page(SEARCH)
+        elif sel:
+            self._select_collection(sel)
+
+    def _home_tint(self, colors) -> None:  # noqa: ANN001
+        """La pantalla de inicio pide teñir la app con su portada (o volver al tema elegido)."""
+        if colors:
+            self.shell.tint(style.cover_theme(style.current(self.shell.theme_key), *colors))
+        else:
+            self.shell.tint(None)
+
+    def _open_eq(self) -> None:
+        self.show_page(HOME)
+        self.home.show_eq(True)
 
     def _collection_clicked(self, item: QListWidgetItem) -> None:
         self._select_collection(item.data(Qt.ItemDataRole.UserRole))
@@ -963,7 +1028,7 @@ class MainWindow(QMainWindow):
 
     def _play_collection(self) -> None:
         if self.c_list.tracks:
-            self.player.play_list(self.c_list.tracks, 0)
+            self.player.play_list(self.c_list.tracks, 0, context=self._coll_context())
 
     def _shuffle_collection(self) -> None:
         if not self.c_list.tracks:
@@ -972,7 +1037,8 @@ class MainWindow(QMainWindow):
 
         if not self.player.queue.shuffle:
             self.player.toggle_shuffle()
-        self.player.play_list(self.c_list.tracks, random.randrange(len(self.c_list.tracks)))
+        self.player.play_list(self.c_list.tracks, random.randrange(len(self.c_list.tracks)),
+                              context=self._coll_context())
 
     def _download_collection(self) -> None:
         if self._coll_sel[0] == "pl" and (pl := self.player.playlists.get(self._coll_sel[1])):
@@ -1248,6 +1314,7 @@ class MainWindow(QMainWindow):
         for apply in self._icons:
             apply()
         self._refresh_collections()
+        self.home.retheme()
         if self.stack.currentIndex() == COLLECTION:
             self._load_collection()  # el autor de la cabecera lleva el color del tema
         self._on_state()

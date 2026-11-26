@@ -20,6 +20,7 @@ class DesktopSettings:
     close_action: str = "background"    # background (seguir sonando) | quit
     background_tip_shown: bool = False  # el aviso de «sigo aquí» se enseña una vez
     animations: bool = True             # barras animadas en la canción que suena
+    home_tint: bool = False             # inicio: toda la app con los colores de la portada
     geometry: str = ""                  # tamaño y posición de la ventana (base64)
 
     @classmethod

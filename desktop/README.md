@@ -8,6 +8,13 @@ Un ejecutable para **macOS, Windows y Linux**, sin instalar Python.
 - Doble clic para escuchar. Clic derecho para encolar, añadir a una playlist o descargar.
 - Tu biblioteca a la izquierda, como en Spotify: cada playlist con su portada (o un mosaico con las
   de sus canciones), su nombre y «Playlist · autor»; al abrirla, portada grande y la de cada canción.
+- **Inicio** (pulsa el logo de BeatShell o la portada de abajo): lo que suena, minimalista. Portada
+  grande sobre su propia portada desenfocada, de qué playlist o álbum viene (púlsalo para ir), y una
+  línea de espectro fina con los colores de la portada. El botón de la gota tiñe toda la app con esos
+  colores mientras estás en el inicio; al salir vuelve tu tema.
+- **Ecualizador en directo** (botón del ecualizador en el inicio, o menú del EQ → *Personalizado*):
+  10 bandas de ±12 dB que se arrastran mientras suena y se oyen al instante (el filtro va en el
+  propio motor de audio, ~10 ms; antes cada cambio reiniciaba el stream). Gasta ~0,4 MB de RAM.
 - **Importar de Spotify** (botón **+** de «Tu biblioteca», o pegando el enlace en la barra): una
   playlist, un álbum o un perfil entero (todas sus playlists públicas).
 - **Temas**: los mismos que en la terminal (BeatShell, Game Boy, Sunset, Ice) más claro, oscuro y
