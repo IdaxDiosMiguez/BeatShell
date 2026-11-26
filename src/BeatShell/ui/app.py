@@ -143,7 +143,7 @@ class BeatShellApp(LibraryMixin, App):
         super().__init__()
         self._initial = initial
         self.cfg = Config.load()
-        if self.cfg.eq_preset not in eq.PRESETS:
+        if not eq.valid(self.cfg.eq_preset):
             self.cfg.eq_preset = eq.DEFAULT
         self.library = Library()
         self.playlists = PlaylistStore()
@@ -156,7 +156,7 @@ class BeatShellApp(LibraryMixin, App):
         self.engine_error: str | None = None
         try:
             self.engine = AudioEngine(volume=self.cfg.volume)
-            self.engine.set_filters(eq.filter_chain(self.cfg.eq_preset, self.cfg.dj_mode))
+            eq.apply(self.engine, self.cfg.eq_preset, self.cfg.dj_mode, self.cfg.eq_custom)
         except (AudioError, Exception) as exc:  # noqa: BLE001
             self.engine_error = str(exc)
         self.downloader = Downloader(self.cfg, self.resolver, self.library, self._from_downloader)
@@ -611,7 +611,7 @@ class BeatShellApp(LibraryMixin, App):
     # ----------------------------------------------------------- ecualizador
     def _apply_filters(self, preset: str | None = None) -> None:
         if self.engine is not None:
-            self.engine.set_filters(eq.filter_chain(preset or self.cfg.eq_preset, self.cfg.dj_mode))
+            eq.apply(self.engine, preset or self.cfg.eq_preset, self.cfg.dj_mode, self.cfg.eq_custom)
 
     def action_equalizer(self) -> None:
         previous = self.cfg.eq_preset

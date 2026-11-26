@@ -138,6 +138,11 @@ QToolTip {{ background: {t.selected}; color: {t.text}; border: none; padding: 5p
 #sidebar {{ background: {t.side}; border-right: 1px solid {t.border}; }}
 #brand {{ font-size: 15px; font-weight: 700; letter-spacing: 0.5px; padding: 2px 4px; }}
 #brandDot {{ color: {t.accent}; font-size: 15px; font-weight: 800; }}
+#brandButton {{ background: transparent; border: none; border-radius: 8px; }}
+#brandButton:hover {{ background: {t.hover}; }}
+#homeTool {{ background: transparent; border: none; padding: 6px; border-radius: 18px; }}
+#homeTool:hover {{ background: rgba(127,127,127,0.16); }}
+#homeTool:checked {{ background: rgba(127,127,127,0.24); }}
 QPushButton#nav {{ text-align: left; padding: 8px 10px; border: none; border-radius: 8px;
                    color: {t.muted}; font-weight: 600; background: transparent; }}
 QPushButton#nav:hover {{ color: {t.text}; background: {t.hover}; }}
@@ -226,3 +231,31 @@ QCheckBox::indicator:checked {{ background: {t.accent}; border-color: {t.accent}
           font-weight: 600; }}
 #toast[error="true"] {{ background: {t.error}; color: #ffffff; }}
 """
+
+
+# ====================================================================== colores de la portada
+def _hsv(c: QColor, s: float | None = None, v: float | None = None) -> str:
+    h, s0, v0, _ = c.getHsvF()
+    return QColor.fromHsvF(max(h, 0.0), s0 if s is None else s, v0 if v is None else v).name()
+
+
+def cover_theme(base: Theme, primary: QColor, secondary: QColor) -> Theme:
+    """El tema actual teñido con los colores de una portada (pantalla de inicio).
+
+    Los neutros toman el tono del color principal muy apagado, y los acentos son los dos
+    colores principales de la portada, ajustados para que se lean sobre el fondo.
+    """
+    h, s, _v, _ = primary.getHsvF()
+    sat = min(max(s, 0.0), 0.5)
+    if base.dark:
+        bg, side, hover, sel, border = (_hsv(primary, sat, v) for v in (0.11, 0.085, 0.16, 0.21, 0.18))
+        acc = [QColor(_hsv(c, max(c.getHsvF()[1], 0.45), max(c.getHsvF()[2], 0.82))) for c in (primary, secondary)]
+    else:
+        bg, side, hover, sel, border = (_hsv(primary, sat * 0.25, v) for v in (0.985, 0.955, 0.93, 0.895, 0.88))
+        acc = [QColor(_hsv(c, max(c.getHsvF()[1], 0.55), min(max(c.getHsvF()[2], 0.42), 0.68)))
+               for c in (primary, secondary)]
+    lum = 0.2126 * acc[0].redF() + 0.7152 * acc[0].greenF() + 0.0722 * acc[0].blueF()
+    return Theme(dark=base.dark, bg=bg, side=side, hover=hover, selected=sel, border=border,
+                 text=base.text, muted=_mix(base.text, bg, 0.40), faint=_mix(base.text, bg, 0.62),
+                 accent=acc[0].name(), accent2=acc[1].name(),
+                 accent_text="#111111" if lum > 0.55 else "#ffffff", error=base.error)

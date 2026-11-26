@@ -185,7 +185,7 @@ class SettingsPage(QScrollArea):
         pl = self.shell.player
         lay = self._section("Reproducción")
         self._row(lay, "Ecualizador",
-                  self._combo([(n, n) for n in eq.PRESETS], self.cfg.eq_preset, pl.set_eq, 200),
+                  self._combo([(n, n) for n in (*eq.PRESETS, eq.CUSTOM)], self.cfg.eq_preset, pl.set_eq, 200),
                   "También en el botón ≋ del reproductor.")
         self.dj_switch = self._switch(self.cfg.dj_mode, lambda _on: pl.toggle_dj())
         self._row(lay, "Modo DJ", self.dj_switch,

@@ -319,6 +319,16 @@ class Shell(QObject):
         if self.win is not None:
             self.win.retheme()
 
+    def tint(self, theme: "style.Theme | None") -> None:
+        """Tiñe toda la interfaz con otro tema sin guardarlo (None: vuelve al tema elegido).
+
+        Lo usa la pantalla de inicio para ponerse de los colores de la portada."""
+        style.assign(self.theme, theme if theme is not None else style.current(self.theme_key))
+        self.app.setPalette(style.palette(self.theme))
+        self.app.setStyleSheet(style.qss(self.theme))
+        if self.win is not None:
+            self.win.retheme()
+
     def _system_scheme_changed(self, *_a) -> None:  # noqa: ANN002
         if self.theme_key == "auto":
             self.set_theme("auto")

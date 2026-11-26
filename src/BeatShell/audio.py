@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .ffmpeg import POPEN_FLAGS, ffmpeg_exe
+from .live_eq import LiveEQ
 
 try:  # PortAudio puede faltar en Linux (paquete libportaudio2)
     import sounddevice as sd
@@ -166,13 +167,14 @@ class AudioEngine:
         self._paused = False
         self._finished = False
         self._last_error: str | None = None
-        self._filters = ""  # cadena -af de ffmpeg (ecualizador, nivelado…)
+        self._filters = ""  # cadena -af de ffmpeg (nivelado del modo DJ)
         self._gain = 0.0
         self._target_gain = 0.0
         self.volume = volume
         self._viz = np.zeros(VIZ_SIZE, dtype=np.float32)
         self._mix = np.zeros((4096, CHANNELS), dtype=np.float32)
         self._tmp = np.zeros((4096, CHANNELS), dtype=np.float32)
+        self.eq = LiveEQ(self.samplerate, CHANNELS)  # ecualizador en directo (sin retardo)
         self._stream = None
         self.underruns = 0  # veces que la tarjeta se quedó sin datos (cortes audibles)
         self._open_stream()
@@ -188,8 +190,11 @@ class AudioEngine:
             samplerate=self.samplerate,
             channels=CHANNELS,
             dtype="float32",
-            blocksize=1024,
-            latency="high",
+            # Bloques de 512 y latencia baja: ~65 ms hasta el altavoz (antes ~120 ms), para que
+            # el ecualizador en directo responda al momento. El callback solo mezcla y filtra
+            # (~0,05 ms por bloque): el resto del trabajo va en otros hilos.
+            blocksize=512,
+            latency="low",
             callback=self._callback,
         )
         self._stream.start()
@@ -238,8 +243,12 @@ class AudioEngine:
     def filters(self) -> str:
         return self._filters
 
+    def set_eq(self, gains) -> None:  # noqa: ANN001
+        """Ecualizador en directo: se oye en el siguiente bloque de audio (~10 ms)."""
+        self.eq.set(gains)
+
     def set_filters(self, chain: str) -> None:
-        """Cambia la cadena de filtros de ffmpeg (EQ, nivelado) al vuelo."""
+        """Cambia la cadena de filtros de ffmpeg (nivelado del modo DJ) al vuelo."""
         if chain == self._filters:
             return
         self._filters = chain
@@ -617,6 +626,7 @@ class AudioEngine:
             produced = done + self._render(mix[done:], tmp[done:])
             self._cond.notify_all()
 
+        self.eq.process(mix)  # plano: no calcula nada
         outdata[:] = mix
         if produced:
             mono = mix[:produced].mean(axis=1)
