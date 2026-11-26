@@ -41,6 +41,9 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -357,7 +360,7 @@ private fun PlaylistRow(p: Playlist, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Como en Spotify: portada (o mosaico), nombre y «Playlist · autor»
-        MosaicCover(p.thumb, p.tracks, Modifier.size(64.dp))
+        MosaicCover(p.image, p.tracks, Modifier.size(64.dp))
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(p.name, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -390,6 +393,11 @@ fun SavedPlaylistScreen(vm: MainViewModel, actions: TrackActions, id: String, ui
     }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
+    // Selector de fotos del sistema: no necesita permisos.
+    val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) vm.changePhoto(id, uri)
+    }
+    val choosePhoto = { pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
     Column(Modifier.fillMaxSize()) {
         BackBar("Biblioteca", onBack) {
             var more by remember { mutableStateOf(false) }
@@ -399,6 +407,10 @@ fun SavedPlaylistScreen(vm: MainViewModel, actions: TrackActions, id: String, ui
                     DropdownMenuItem(text = { Text("Añadir todo a la cola") }, onClick = { more = false; vm.enqueue(p.tracks, false) })
                     DropdownMenuItem(text = { Text("Descargar todo (M4A)") }, onClick = { more = false; vm.download(p.tracks) })
                     DropdownMenuItem(text = { Text("Renombrar") }, onClick = { more = false; renaming = true })
+                    DropdownMenuItem(text = { Text("Cambiar foto") }, onClick = { more = false; choosePhoto() })
+                    if (p.customThumb != null) {
+                        DropdownMenuItem(text = { Text("Quitar foto") }, onClick = { more = false; vm.removePhoto(p.id) })
+                    }
                     DropdownMenuItem(text = { Text("Eliminar") }, onClick = { more = false; deleting = true })
                 }
             }
@@ -423,10 +435,11 @@ fun SavedPlaylistScreen(vm: MainViewModel, actions: TrackActions, id: String, ui
                     owner = p.artist,
                     info = listOf(if (p.kind == KIND_ALBUM) "Álbum" else if (spotify) "Playlist pública" else "Playlist",
                         summary(p.tracks)).joinToString(" · "),
-                    thumb = p.thumb,
+                    thumb = p.image,
                     tracks = p.tracks,
                     onPlay = { vm.player.playList(p.tracks) },
                     onShuffle = { vm.player.shuffleList(p.tracks) },
+                    onCoverClick = { choosePhoto() },
                 )
             },
             empty = "Esta playlist está vacía. Añade canciones desde su menú «⋮».",

@@ -253,6 +253,14 @@ def cover_bytes(track: Track) -> bytes | None:
             data = disk.read_bytes()
         except OSError:
             data = None
+    if data is None and track.thumb and not track.thumb.startswith(("http://", "https://")):
+        # Foto local (p. ej. la que elegiste para una playlist): se lee tal cual, sin caché.
+        local = track.thumb[7:] if track.thumb.startswith("file://") else track.thumb
+        try:
+            if os.path.isfile(local):
+                return Path(local).read_bytes()
+        except OSError:
+            return None
     if data is None and track.thumb:
         from .services import fetch_bytes
 

@@ -265,6 +265,17 @@ class Playlist:
     parent: str | None = None  # id de la carpeta que lo contiene
     artist: str = ""  # para álbumes
     thumb: str | None = None
+    custom_thumb: str | None = None  # foto elegida por ti (archivo); manda sobre `thumb`
+
+    @property
+    def image(self) -> str | None:
+        """La portada que se enseña: tu foto si existe en este equipo; si no, la original."""
+        c = self.custom_thumb
+        if c:
+            path = c[7:] if c.startswith("file://") else c
+            if os.path.exists(path):
+                return path
+        return self.thumb
 
     @property
     def duration(self) -> float:
@@ -289,6 +300,7 @@ class PlaylistStore:
                     name=p["name"], id=p["id"], created=p.get("created", time.time()),
                     source_url=p.get("source_url"), kind=p.get("kind", PLAYLIST),
                     parent=p.get("parent"), artist=p.get("artist", ""), thumb=p.get("thumb"),
+                    custom_thumb=p.get("custom_thumb"),
                     tracks=[Track.from_dict(t) for t in p.get("tracks", [])],
                 ))
             except (KeyError, TypeError):
@@ -300,6 +312,7 @@ class PlaylistStore:
             write_json_atomic(self.PATH, [
                 {"name": p.name, "id": p.id, "created": p.created, "source_url": p.source_url,
                  "kind": p.kind, "parent": p.parent, "artist": p.artist, "thumb": p.thumb,
+                 "custom_thumb": p.custom_thumb,
                  "tracks": [t.to_dict() for t in p.tracks]}
                 for p in self.items
             ])
@@ -426,6 +439,25 @@ class PlaylistStore:
             c.parent = p.parent
         self.items = [x for x in self.items if x.id != pid]
         self.save()
+
+    COVERS_DIR = DATA_DIR / "covers"
+
+    def set_custom_thumb(self, pid: str, path: str | None) -> None:
+        """Pone (o quita, con None) la foto propia de un elemento. La anterior se borra si era
+        una de las que guarda BeatShell en su carpeta de portadas."""
+        p = self.get(pid)
+        if p is None:
+            return
+        old = p.custom_thumb
+        p.custom_thumb = path
+        self.save()
+        if old and old != path:
+            old_path = Path(old[7:] if old.startswith("file://") else old)
+            try:
+                if old_path.parent.resolve() == self.COVERS_DIR.resolve():
+                    old_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def rename(self, pid: str, name: str) -> None:
         if (p := self.get(pid)) and name.strip():

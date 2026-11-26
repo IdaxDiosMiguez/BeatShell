@@ -60,6 +60,8 @@ import coil3.compose.rememberAsyncImagePainter
 import io.github.idaxdiosmiguez.beatshell.core.Track
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.rounded.Shuffle
 import io.github.idaxdiosmiguez.beatshell.core.fmtTime
 
@@ -243,6 +245,7 @@ fun CollectionHero(
     onPlay: () -> Unit,
     onShuffle: () -> Unit,
     actions: @Composable () -> Unit = {},
+    onCoverClick: (() -> Unit)? = null,
 ) {
     val c = LocalBs.current
     Column(
@@ -251,7 +254,16 @@ fun CollectionHero(
             .padding(top = 16.dp),
     ) {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            MosaicCover(thumb, tracks, Modifier.size(232.dp), radius = 6.dp)
+            Box(if (onCoverClick != null) Modifier.clickable(onClick = onCoverClick) else Modifier) {
+                MosaicCover(thumb, tracks, Modifier.size(232.dp), radius = 6.dp)
+                if (onCoverClick != null) {
+                    // Lápiz discreto: la portada se puede tocar para cambiar la foto.
+                    Box(Modifier.align(Alignment.BottomEnd).padding(8.dp).size(34.dp).clip(CircleShape)
+                        .background(Color(0x99000000)), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Edit, "Cambiar foto", tint = Color.White, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
         }
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp)) {
             Text(title, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = c.text, maxLines = 2,

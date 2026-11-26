@@ -162,6 +162,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         toast(if (n == 0) "Ya estaba en «${p.name}»" else "Añadida${if (n > 1) "s $n canciones" else ""} a «${p.name}»")
     }
 
+    fun changePhoto(id: String, uri: android.net.Uri) {
+        viewModelScope.launch {
+            try {
+                library.saveCover(id, uri)
+                toast("Foto cambiada")
+            } catch (e: BeatShellError) {
+                toast(e.message ?: "No se pudo usar esa imagen")
+            }
+        }
+    }
+
+    fun removePhoto(id: String) = library.setCustomThumb(id, null)
+
     fun newPlaylist(name: String, tracks: List<Track> = emptyList()) {
         val p = library.create(name, tracks)
         toast("Playlist «${p.name}» creada")

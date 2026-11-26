@@ -29,15 +29,19 @@ data class Playlist(
     val parent: String? = null,
     val artist: String = "",
     val thumb: String? = null,
+    /** Foto elegida por ti (file://…); manda sobre [thumb] mientras exista en este teléfono. */
+    val customThumb: String? = null,
 ) {
     val isFolder: Boolean get() = kind == "folder"
-    val cover: String? get() = thumb ?: tracks.firstNotNullOfOrNull { it.cover }
+    val image: String? get() = customThumb?.takeIf { localExists(it) } ?: thumb
+    val cover: String? get() = image ?: tracks.firstNotNullOfOrNull { it.cover }
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("name", name); put("id", id); put("created", created)
         put("source_url", sourceUrl ?: JSONObject.NULL); put("kind", kind)
         put("parent", parent ?: JSONObject.NULL); put("artist", artist)
         put("thumb", thumb ?: JSONObject.NULL)
+        put("custom_thumb", customThumb ?: JSONObject.NULL)
         put("tracks", Track.listToJson(tracks))
     }
 
@@ -51,10 +55,14 @@ data class Playlist(
             parent = o.optStringOrNull("parent"),
             artist = o.optString("artist", ""),
             thumb = o.optStringOrNull("thumb"),
+            customThumb = o.optStringOrNull("custom_thumb"),
             tracks = Track.listFromJson(o.optJSONArray("tracks")),
         )
     }
 }
+
+/** ¿Existe en este dispositivo la foto local `uri` (file://… o ruta)? */
+internal fun localExists(uri: String): Boolean = File(uri.removePrefix("file://")).isFile
 
 /** Escritura atómica: se escribe a un temporal y se renombra. */
 internal fun File.writeAtomic(text: String) {
@@ -165,6 +173,52 @@ class Library private constructor(private val context: Context) {
         return created to updated
     }
 
+    // ------------------------------------------------------------------ fotos propias
+    private val coversDir = File(dir, "covers")
+
+    /** Copia la imagen elegida (recortada en cuadrado, 640 px, JPEG) y la pone como foto. */
+    suspend fun saveCover(id: String, source: android.net.Uri) = withContext(Dispatchers.IO) {
+        val bmp = decodeSquare(source) ?: throw BeatShellError("No se pudo abrir esa imagen")
+        coversDir.mkdirs()
+        val out = File(coversDir, "$id-${System.nanoTime()}.jpg")
+        out.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }
+        bmp.recycle()
+        setCustomThumb(id, "file://${out.absolutePath}")
+    }
+
+    fun setCustomThumb(id: String, uri: String?) {
+        val old = playlist(id)?.customThumb
+        edit { l -> l.map { if (it.id == id) it.copy(customThumb = uri) else it } }
+        if (old != null && old != uri) {
+            val f = File(old.removePrefix("file://"))
+            if (f.parentFile?.canonicalPath == coversDir.canonicalPath) f.delete()
+        }
+    }
+
+    private fun decodeSquare(uri: android.net.Uri, size: Int = 640): android.graphics.Bitmap? = runCatching {
+        val src = if (android.os.Build.VERSION.SDK_INT >= 28) {
+            // ImageDecoder respeta la orientación EXIF y reduce al decodificar (menos memoria).
+            android.graphics.ImageDecoder.decodeBitmap(
+                android.graphics.ImageDecoder.createSource(context.contentResolver, uri)) { dec, info, _ ->
+                val side = minOf(info.size.width, info.size.height)
+                if (side > size * 2) dec.setTargetSampleSize(side / (size * 2))
+                dec.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+        } else {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+            val side = minOf(bounds.outWidth, bounds.outHeight).coerceAtLeast(1)
+            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = maxOf(1, side / (size * 2)) }
+            context.contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
+        } ?: return null
+        val side = minOf(src.width, src.height)
+        val sq = android.graphics.Bitmap.createBitmap(src, (src.width - side) / 2, (src.height - side) / 2, side, side)
+        val out = if (side > size) android.graphics.Bitmap.createScaledBitmap(sq, size, size, true) else sq
+        if (sq !== src) src.recycle()
+        if (out !== sq) sq.recycle()
+        out
+    }.getOrNull()
+
     fun rename(id: String, name: String) = edit { l -> l.map { if (it.id == id) it.copy(name = name.trim()) else it } }
 
     fun delete(id: String) = edit { l -> l.filterNot { it.id == id || it.parent == id } }
@@ -210,7 +264,8 @@ class Library private constructor(private val context: Context) {
             cur + incoming.filter { it.id !in ids && !it.isFolder }.map {
                 n++
                 // Rutas de archivos de otro equipo no sirven aquí: se quedan como YouTube/Spotify.
-                it.copy(tracks = it.tracks.map { t -> if (t.path?.startsWith("content://") == false) t.copy(path = null) else t }
+                it.copy(customThumb = it.customThumb?.takeIf { u -> localExists(u) },
+                    tracks = it.tracks.map { t -> if (t.path?.startsWith("content://") == false) t.copy(path = null) else t }
                     .filter { t -> t.path != null || t.url != null || t.spotifyUri != null })
             }
         }
