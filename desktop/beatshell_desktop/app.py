@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -330,6 +331,7 @@ class MainWindow(QMainWindow):
 
     def _build_collection_page(self) -> QWidget:
         self.c_hero = HeroCover(self.t, 184)
+        self.c_hero.clicked.connect(lambda: self._coll_sel[0] == "pl" and self._change_photo(self._coll_sel[1]))
         p = Page("Biblioteca", hero=self.c_hero)
         self.c_play = p.button("Reproducir", primary=True)
         self.c_shuffle = p.button("Aleatorio")
@@ -913,7 +915,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _art(p) -> tuple:  # noqa: ANN001
-        sources = mosaic_sources(p.thumb, p.tracks)
+        sources = mosaic_sources(p.image, p.tracks)
         return sources, f"{p.artist}|{p.name}", None, p.kind == ARTIST
 
     # ------------------------------------------------------------ inicio
@@ -922,7 +924,7 @@ class MainWindow(QMainWindow):
         kind, ident = self._coll_sel
         if kind == "pl" and (p := self.player.playlists.get(ident)):
             return PlayContext(KIND_NAME.get(p.kind, "Playlist"), p.name,
-                               p.artist if p.kind != ARTIST else "", p.thumb, p.tracks[:24], ("pl", ident))
+                               p.artist if p.kind != ARTIST else "", p.image, p.tracks[:24], ("pl", ident))
         if kind == "dir" and (f := self.player.library.folder(ident)):
             return PlayContext("Carpeta", f.name, sel=("dir", ident))
         return PlayContext("Tu música", "Todas las canciones", sel=("all", None))
@@ -997,7 +999,7 @@ class MainWindow(QMainWindow):
             owner = f"<b style='color:{self.t.text}'>{_html(pl.artist)}</b> · " if pl.artist else ""
             p.sub.setText(owner + _html(summary))
             sources, seed, _tile, round_ = self._art(pl)
-            self.c_hero.set_art(sources, seed, round_=round_)
+            self.c_hero.set_art(sources, seed, round_=round_, editable=True)
         else:
             p.kind.setText("Carpeta" if kind == "dir" else "Tu música")
             p.sub.setText(_html(summary))
@@ -1069,6 +1071,9 @@ class MainWindow(QMainWindow):
             m.addAction("Quitar de la biblioteca", lambda: self._remove_folder(ident))
         elif kind == "pl":
             m.addAction("Renombrar…", lambda: self._rename_playlist(ident))
+            m.addAction("Cambiar foto…", lambda: self._change_photo(ident))
+            if (pl := self.player.playlists.get(ident)) is not None and pl.custom_thumb:
+                m.addAction("Quitar foto", lambda: self._remove_photo(ident))
             m.addAction("Exportar .m3u8…", lambda: self._export_playlist(ident))
             m.addSeparator()
             m.addAction("Eliminar", lambda: self._delete_playlist(ident))
@@ -1100,6 +1105,43 @@ class MainWindow(QMainWindow):
             self.toast.show_message(f"{len(tracks)} añadida(s) a «{p.name}»")
         else:
             self._select_collection(("pl", p.id))
+
+    def _change_photo(self, pid: str) -> None:
+        """Foto propia para una playlist/álbum: se recorta en cuadrado y se guarda a 640 px."""
+        p = self.player.playlists.get(pid)
+        if p is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, f"Foto para «{p.name}»", str(Path.home() / "Pictures"),
+                                              "Imágenes (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.heic)")
+        if not path:
+            return
+        img = QImage(path)
+        if img.isNull():
+            self.toast.show_message("No se pudo abrir esa imagen", True)
+            return
+        side = min(img.width(), img.height())
+        img = img.copy((img.width() - side) // 2, (img.height() - side) // 2, side, side)
+        if side > 640:
+            img = img.scaled(640, 640, Qt.AspectRatioMode.IgnoreAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+        store = self.player.playlists
+        store.COVERS_DIR.mkdir(parents=True, exist_ok=True)
+        out = store.COVERS_DIR / f"{pid}-{time.time_ns()}.jpg"  # nombre nuevo: sin caché vieja
+        if not img.convertToFormat(QImage.Format.Format_RGB32).save(str(out), "JPG", 90):
+            self.toast.show_message("No se pudo guardar la foto", True)
+            return
+        store.set_custom_thumb(pid, str(out))
+        self._after_photo(pid)
+        self.toast.show_message(f"Foto de «{p.name}» cambiada")
+
+    def _remove_photo(self, pid: str) -> None:
+        self.player.playlists.set_custom_thumb(pid, None)
+        self._after_photo(pid)
+
+    def _after_photo(self, pid: str) -> None:
+        self._refresh_collections()
+        if self.stack.currentIndex() == COLLECTION and self._coll_sel == ("pl", pid):
+            self._load_collection()
 
     def _rename_playlist(self, pid: str) -> None:
         p = self.player.playlists.get(pid)

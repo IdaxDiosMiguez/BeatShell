@@ -285,10 +285,18 @@ class CollectionDelegate(QStyledItemDelegate):
 
 
 class HeroCover(QWidget):
-    """Portada grande de la cabecera de una playlist (con mosaico si no tiene propia)."""
+    """Portada grande de la cabecera de una playlist (con mosaico si no tiene propia).
+
+    Si es editable, al pulsarla se emite `clicked` (cambiar la foto) y al pasar por encima se
+    insinúa con un velo y un lápiz."""
+
+    clicked = Signal()
 
     def __init__(self, theme: Theme, size: int = 192) -> None:
         super().__init__()
+        self.editable = False
+        self._hover = False
+        self.setMouseTracking(True)
         self.t = theme
         self.setFixedSize(size, size)
         self._sources: list[Track] = []
@@ -298,9 +306,24 @@ class HeroCover(QWidget):
         covers().ready.connect(self.update)
 
     def set_art(self, sources: list[Track], seed: str, tile: str | None = None,
-                round_: bool = False) -> None:
+                round_: bool = False, editable: bool = False) -> None:
         self._sources, self._seed, self._tile, self._round = sources, seed, tile, round_
+        self.editable = editable
+        self.setCursor(Qt.CursorShape.PointingHandCursor if editable else Qt.CursorShape.ArrowCursor)
+        self.setToolTip("Cambiar foto" if editable else "")
         self.update()
+
+    def enterEvent(self, e) -> None:  # noqa: ANN001, N802
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e) -> None:  # noqa: ANN001, N802
+        self._hover = False
+        self.update()
+
+    def mousePressEvent(self, e) -> None:  # noqa: ANN001, N802
+        if self.editable and e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
 
     def paintEvent(self, _e) -> None:  # noqa: ANN001, N802
         p = QPainter(self)
@@ -310,6 +333,15 @@ class HeroCover(QWidget):
             paint_tile(p, rect, self.t, self._tile, 8, gradient=self._tile == "note")
         else:
             paint_cover(p, rect, self._sources, 8, self._seed, big=True, round_=self._round)
+        if self.editable and self._hover:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 120))
+            p.drawRoundedRect(rect, 8, 8)
+            px = icons.pixmap("edit", "#ffffff", 36)
+            p.drawPixmap(QRectF(rect.center().x() - 18, rect.center().y() - 26, 36, 36), px, QRectF(px.rect()))
+            p.setPen(QColor("#ffffff"))
+            p.drawText(QRectF(rect.left(), rect.center().y() + 16, rect.width(), 22),
+                       Qt.AlignmentFlag.AlignCenter, "Cambiar foto")
         p.end()
 
 
